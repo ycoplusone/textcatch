@@ -111,24 +111,26 @@ class ForwardWorker(
     private suspend fun buildMmsPayload(receiver: String, timestamp: Long): JSONObject? {
         val lastSent = getLastMmsId()
         repeat(MMS_POLL_TRIES) { attempt ->
-            val id = queryLatestMmsId()
-            if (id != null && id != lastSent) {
+            // 아직 안 보낸 수신 MMS 중 가장 오래된 것부터 (연속 수신 시 누락 방지)
+            for (id in queryUnsentMmsIds(lastSent)) {
                 val dateMs = queryMmsDateMillis(id)
                 val recent = dateMs <= 0L || dateMs >= timestamp - MMS_RECENT_WINDOW_MS
-                if (recent) {
-                    val body = StringBuilder()
-                    val images = JSONArray()
-                    readMmsParts(id, body, images)
-                    if (body.isNotEmpty() || images.length() > 0) {
-                        pendingMmsId = id
-                        return JSONObject().apply {
-                            put("type", "MMS")
-                            put("sender", queryMmsSender(id))
-                            put("receiver", receiver)
-                            put("body", body.toString())
-                            put("images", images)
-                            put("timestamp", timestamp)
-                        }
+                if (!recent) continue
+                val body = StringBuilder()
+                val images = JSONArray()
+                readMmsParts(id, body, images)
+                // 본문 없이 제목에만 내용이 있는 LMS 대응
+                if (body.isEmpty()) body.append(queryMmsSubject(id))
+                if (body.isNotEmpty() || images.length() > 0) {
+                    pendingMmsId = id
+                    Log.d(TAG, "MMS 파싱 id=$id bodyLen=${body.length} images=${images.length()}")
+                    return JSONObject().apply {
+                        put("type", "MMS")
+                        put("sender", queryMmsSender(id))
+                        put("receiver", receiver)
+                        put("body", body.toString())
+                        put("images", images)
+                        put("timestamp", timestamp)
                     }
                 }
             }
@@ -138,13 +140,45 @@ class ForwardWorker(
         return null
     }
 
-    private fun queryLatestMmsId(): Long? {
-        val uri = Uri.parse("content://mms")
+    /** 다운로드 완료된(m_type=132) 수신함(msg_box=1) MMS 중 lastSent 이후 id, 오래된 순. */
+    private fun queryUnsentMmsIds(lastSent: Long): List<Long> {
+        val ids = mutableListOf<Long>()
+        applicationContext.contentResolver.query(
+            Uri.parse("content://mms"), arrayOf("_id"),
+            "_id>? AND msg_box=1 AND m_type=132", arrayOf(lastSent.toString()), "_id ASC"
+        )?.use { c ->
+            while (c.moveToNext()) ids.add(c.getLong(0))
+        }
+        return ids
+    }
+
+    /** MMS 제목. 프로바이더에 ISO-8859-1 로 저장되는 경우가 있어 sub_cs 로 재디코딩. */
+    private fun queryMmsSubject(mmsId: Long): String {
         applicationContext.contentResolver
-            .query(uri, arrayOf("_id"), null, null, "date DESC")?.use { c ->
-                if (c.moveToFirst()) return c.getLong(c.getColumnIndexOrThrow("_id"))
+            .query(Uri.parse("content://mms/$mmsId"), arrayOf("sub", "sub_cs"), null, null, null)
+            ?.use { c ->
+                if (!c.moveToFirst()) return ""
+                val raw = c.getString(0) ?: return ""
+                val cs = charsetOf(if (c.isNull(1)) 0 else c.getInt(1)) ?: return raw
+                return try {
+                    // ISO-8859-1 범위 밖 문자가 있으면 이미 디코딩된 문자열
+                    if (raw.any { it.code > 0xFF }) raw
+                    else String(raw.toByteArray(Charsets.ISO_8859_1), cs)
+                } catch (e: Exception) {
+                    raw
+                }
             }
-        return null
+        return ""
+    }
+
+    /** MMS charset(MIBenum) → Charset. 알 수 없으면 null. */
+    private fun charsetOf(mib: Int): java.nio.charset.Charset? = when (mib) {
+        106 -> Charsets.UTF_8
+        3 -> Charsets.US_ASCII
+        4 -> Charsets.ISO_8859_1
+        36, 38 -> java.nio.charset.Charset.forName("EUC-KR")
+        1015 -> Charsets.UTF_16
+        else -> null
     }
 
     /** MMS date 컬럼은 초 단위인 경우가 많아 밀리초로 정규화. */
@@ -181,11 +215,19 @@ class ForwardWorker(
                 val idIdx = c.getColumnIndex("_id")
                 val ctIdx = c.getColumnIndex("ct")
                 val textIdx = c.getColumnIndex("text")
+                val dataIdx = c.getColumnIndex("_data")
+                val chsetIdx = c.getColumnIndex("chset")
                 while (c.moveToNext()) {
                     val contentType = c.getString(ctIdx) ?: continue
                     when {
                         contentType == "text/plain" -> {
-                            val t = c.getString(textIdx)
+                            var t = if (textIdx >= 0) c.getString(textIdx) else null
+                            // 아주 긴 텍스트는 text 컬럼 대신 파일(_data)에 저장됨
+                            if (t.isNullOrEmpty() && dataIdx >= 0 && !c.isNull(dataIdx)) {
+                                val cs = if (chsetIdx >= 0 && !c.isNull(chsetIdx))
+                                    charsetOf(c.getInt(chsetIdx)) else null
+                                t = readPartAsText(c.getLong(idIdx), cs ?: Charsets.UTF_8)
+                            }
                             if (!t.isNullOrEmpty()) bodyOut.append(t)
                         }
                         contentType.startsWith("image/") -> {
@@ -200,6 +242,18 @@ class ForwardWorker(
                     }
                 }
             }
+    }
+
+    private fun readPartAsText(partId: Long, charset: java.nio.charset.Charset): String? {
+        val partUri = ContentUris.withAppendedId(Uri.parse("content://mms/part"), partId)
+        return try {
+            applicationContext.contentResolver.openInputStream(partUri)?.use { input ->
+                String(input.readBytes(), charset)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "텍스트 파트 읽기 실패 id=$partId", e)
+            null
+        }
     }
 
     private fun readPartAsBase64(partId: Long): String? {

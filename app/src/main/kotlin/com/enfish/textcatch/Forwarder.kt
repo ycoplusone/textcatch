@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
@@ -23,7 +24,10 @@ object Forwarder {
     const val KEY_BODY = "body"
     const val KEY_TIMESTAMP = "timestamp"
 
-    private fun enqueue(context: Context, data: Data) {
+    /** MMS 작업은 같은 content provider 를 보므로 직렬 실행(동시 실행 시 같은 건 중복 전송 방지). */
+    private const val MMS_CHAIN = "mms_forward"
+
+    private fun enqueue(context: Context, data: Data, uniqueChain: String? = null) {
         // 네트워크가 있을 때 실행 (없으면 연결될 때까지 대기 → 유실 방지)
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -38,7 +42,12 @@ object Forwarder {
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .build()
 
-        WorkManager.getInstance(context.applicationContext).enqueue(request)
+        val wm = WorkManager.getInstance(context.applicationContext)
+        if (uniqueChain != null) {
+            wm.enqueueUniqueWork(uniqueChain, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+        } else {
+            wm.enqueue(request)
+        }
     }
 
     fun enqueueSms(
@@ -67,7 +76,8 @@ object Forwarder {
                 .putString(KEY_TYPE, "MMS")
                 .putString(KEY_RECEIVER, receiver)
                 .putLong(KEY_TIMESTAMP, timestamp)
-                .build()
+                .build(),
+            uniqueChain = MMS_CHAIN
         )
     }
 }
