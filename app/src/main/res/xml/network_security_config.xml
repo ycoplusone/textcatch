@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- API 서버가 http(평문) 이므로 해당 도메인에 한해 cleartext 허용.
+         targetSdk 28+ 는 기본적으로 평문 HTTP 를 차단한다. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">enfish.duckdns.org</domain>
+    </domain-config>
+</network-security-config>
