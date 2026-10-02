@@ -155,6 +155,16 @@ scripts\install.bat -Apk D:\경로\app-debug.apk   # 다른 APK 지정
   `install.ps1` 의 `$Apk` 기본값을 주석 처리된 `$PSScriptRoot\app-debug.apk` 줄로 바꾼다
 - `install.ps1` 은 Windows PowerShell 5.1 한글 출력을 위해 **UTF-8 BOM** 으로 저장해야 한다 (편집 후 BOM 유지 확인)
 
+### 에뮬레이터(AVD) 실행 스크립트
+```bash
+scripts\avd.bat                  # AVD 실행 + 부팅 대기 (이미 실행 중이면 재사용)
+scripts\avd.bat -Install         # + APK 설치 + pm grant 7개 + 앱 실행 (먼저 assembleDebug)
+scripts\avd.bat -Cold            # 스냅샷 무시하고 콜드 부팅 (default_boot 로드 실패 시)
+scripts\avd.bat -Avd <이름>       # AVD 지정 (기본: -list-avds 첫 번째, 현재 Small_Phone)
+```
+- SDK 경로는 `ANDROID_HOME` → `ANDROID_SDK_ROOT` → `%LOCALAPPDATA%\Android\Sdk` 순으로 찾는다
+- `avd.ps1` 도 **UTF-8 BOM** 으로 저장 (install.ps1 과 동일)
+
 ### SMS/MMS 테스트 (에뮬레이터)
 
 ```bash
@@ -252,7 +262,9 @@ app/
 
 scripts/
 ├── install.bat                          (실행 래퍼 - install.ps1 호출)
-└── install.ps1                          (USB 설치 + 권한 설정, UTF-8 BOM)
+├── install.ps1                          (USB 설치 + 권한 설정, UTF-8 BOM)
+├── avd.bat                              (실행 래퍼 - avd.ps1 호출)
+└── avd.ps1                              (AVD 실행 + 부팅 대기 + 선택적 설치, UTF-8 BOM)
 ```
 
 ## 작업 규칙
