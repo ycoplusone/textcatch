@@ -358,6 +358,40 @@ adb install app-release.apk
 → Base64 인코딩 확인
 ```
 
+### ❌ "샤오미(HyperOS/MIUI) 설치 실패 / SMS 권한 자동 거부"
+```
+확인된 기기: Xiaomi 24094RAD4G, Android 15, HyperOS 2.0 (기본 문자앱 Google 메시지)
+
+[설치 실패] INSTALL_FAILED_USER_RESTRICTED
+→ 샤오미는 adb 설치가 기본 차단. 개발자 옵션 "USB를 통해 설치" 필요 (Mi 계정 로그인 필수)
+→ "USB 디버깅(보안 설정)" 도 Mi 계정 필수 — 없으면 adb pm grant 가 Exception 으로 실패
+
+[SMS 권한 자동 거부] 파일관리자로 APK 직접 설치(사이드로드)한 경우
+→ Android 13+ "제한된 설정" 때문에 SMS 권한 요청이 묻지도 않고 거부됨
+   (dumpsys 에 USER_SET 없이 granted=false, appops 에 ACCESS_RESTRICTED_SETTINGS: ignore)
+→ adb 로 해제 가능 (= 앱 정보 › ⋮ › "제한된 설정 허용"):
+   adb shell appops set com.enfish.textcatch ACCESS_RESTRICTED_SETTINGS allow
+→ 그 후 앱의 권한 요청 버튼 또는 설정에서 SMS 권한 직접 허용
+```
+
+**Mi 계정 없이 설치하는 순서**
+```bash
+# 1. APK 복사 → 폰의 파일관리자 › Download › app-debug.apk 로 설치
+adb push app\build\outputs\apk\debug\app-debug.apk /sdcard/Download/
+
+# 2. 제한된 설정 해제 (최초 설치 시 1회)
+adb shell appops set com.enfish.textcatch ACCESS_RESTRICTED_SETTINGS allow
+
+# 3. 폰에서 수동 설정 (adb 로 불가)
+#    - 앱 권한: SMS / 전화 / 알림 허용
+#    - 기타 권한: SMS 받기, 알림 SMS 읽기, MMS 읽기 → "허용" ("묻기" X)
+#    - 자동 시작 켜기 (꺼져 있으면 앱 종료 시 SMS 수신 안 됨)
+#    - 배터리 절약 → "제한 없음"
+```
+- 업데이트(같은 서명 덮어쓰기)는 1번만 하면 권한/설정 유지. 삭제 후 재설치 시 2~3번 다시
+- Mi 계정 로그인 + "USB를 통해 설치" 를 켜면 `installDebug` 그대로 사용 가능, 제한도 안 걸림
+- 기본 문자앱이 Google 메시지이고 RCS 채팅이 켜져 있으면 RCS 메시지는 브로드캐스트가 없어 감지 불가
+
 ### ❌ "일부만 전송되거나 늦게 전송됨"
 ```
 → 서버 응답 지연/일시 중단 → 재시도는 되지만 백오프로 지연될 수 있음
