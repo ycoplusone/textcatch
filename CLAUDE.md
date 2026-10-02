@@ -137,6 +137,24 @@ dependencies {
 .\gradlew.bat installDebug && adb shell am start -n com.enfish.textcatch/.MainActivity
 ```
 
+### 실기기 설치 스크립트 (USB 연결 → 설치 + 권한 설정)
+```bash
+# 먼저 빌드 (.\gradlew.bat assembleDebug) 후 실행
+scripts\install.bat                     # 기기 1대 연결 시
+scripts\install.bat -Serial <시리얼>     # 여러 대 연결 시 (adb devices 로 확인)
+scripts\install.bat -Apk D:\경로\app-debug.apk   # 다른 APK 지정
+```
+- `install.bat` 은 실행 정책 우회(`-ExecutionPolicy Bypass`)로 같은 폴더의 `install.ps1` 을 실행하는 래퍼
+- 수행 순서: 기기 확인 → `adb install -r` → 제한된 설정 해제(appops) → `pm grant` 7개 → 권한 상태 출력 → 앱 실행
+- 샤오미에서 `INSTALL_FAILED_USER_RESTRICTED` 면 APK 를 `/sdcard/Download/textcatch.apk` 로 복사하고,
+  폰에서 직접 설치할 때까지 최대 5분 대기 후 이어서 진행. 앱 정보 화면을 열고 수동 설정(자동 시작/배터리/기타 권한) 안내
+- `INSTALL_FAILED_UPDATE_INCOMPATIBLE`(서명 다름) 은 데이터 보호를 위해 자동 삭제하지 않고 중단
+- `pm grant` 실패 항목(샤오미 보안 설정 꺼짐 등)은 앱의 권한 요청 버튼으로 허용
+- APK 기본 경로는 `app\build\outputs\apk\debug\app-debug.apk`.
+  `scripts` 폴더만 다른 PC 로 복사해 쓸 때는 APK 를 같은 폴더에 두고
+  `install.ps1` 의 `$Apk` 기본값을 주석 처리된 `$PSScriptRoot\app-debug.apk` 줄로 바꾼다
+- `install.ps1` 은 Windows PowerShell 5.1 한글 출력을 위해 **UTF-8 BOM** 으로 저장해야 한다 (편집 후 BOM 유지 확인)
+
 ### SMS/MMS 테스트 (에뮬레이터)
 
 ```bash
@@ -231,6 +249,10 @@ app/
 │       ├── layout/activity_log.xml      (송신 이력 레이아웃)
 │       └── xml/network_security_config.xml  (평문 http 허용 도메인)
 └── build.gradle.kts
+
+scripts/
+├── install.bat                          (실행 래퍼 - install.ps1 호출)
+└── install.ps1                          (USB 설치 + 권한 설정, UTF-8 BOM)
 ```
 
 ## 작업 규칙
@@ -374,7 +396,7 @@ adb install app-release.apk
 → 그 후 앱의 권한 요청 버튼 또는 설정에서 SMS 권한 직접 허용
 ```
 
-**Mi 계정 없이 설치하는 순서**
+**Mi 계정 없이 설치하는 순서** (`scripts\install.bat` 이 1~2번을 자동 처리)
 ```bash
 # 1. APK 복사 → 폰의 파일관리자 › Download › app-debug.apk 로 설치
 adb push app\build\outputs\apk\debug\app-debug.apk /sdcard/Download/
