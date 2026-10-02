@@ -34,19 +34,26 @@ object Utils {
      * 통신사/기기에 따라 빈 값이 나올 수 있다.
      */
     @SuppressLint("MissingPermission", "HardwareIds")
-    fun getDevicePhoneNumber(context: Context): String {
+    fun getDevicePhoneNumber(
+        context: Context,
+        subId: Int = SubscriptionManager.INVALID_SUBSCRIPTION_ID
+    ): String {
         return try {
-            val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+            val baseTm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
                 ?: return ""
+            // 듀얼 SIM: 메시지를 받은 SIM 기준. 모르면 기본 SIM.
+            val id = if (SubscriptionManager.isValidSubscriptionId(subId)) subId
+                     else SubscriptionManager.getDefaultSubscriptionId()
+            val tm = if (SubscriptionManager.isValidSubscriptionId(id))
+                         baseTm.createForSubscriptionId(id) else baseTm
+            val sm = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE)
+                    as? SubscriptionManager
             val number = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                val sm = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE)
-                        as? SubscriptionManager
-                val subId = SubscriptionManager.getDefaultSubscriptionId()
-                sm?.getPhoneNumber(subId).takeUnless { it.isNullOrBlank() } ?: tm.line1Number
+                sm?.getPhoneNumber(id).takeUnless { it.isNullOrBlank() }
             } else {
                 @Suppress("DEPRECATION")
-                tm.line1Number
-            }
+                sm?.getActiveSubscriptionInfo(id)?.number.takeUnless { it.isNullOrBlank() }
+            } ?: @Suppress("DEPRECATION") tm.line1Number
             number ?: ""
         } catch (e: SecurityException) {
             ""
@@ -54,4 +61,11 @@ object Utils {
             ""
         }
     }
+
+    /** SMS/WAP_PUSH 브로드캐스트에 담긴 수신 SIM 의 subscription id. 없으면 INVALID. */
+    fun subIdFromIntent(intent: android.content.Intent): Int =
+        intent.getIntExtra(
+            SubscriptionManager.EXTRA_SUBSCRIPTION_INDEX,
+            intent.getIntExtra("subscription", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+        )
 }
