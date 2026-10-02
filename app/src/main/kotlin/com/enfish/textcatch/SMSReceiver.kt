@@ -42,9 +42,11 @@ open class SMSReceiver : BroadcastReceiver() {
             timestamp = m.timestampMillis
         }
 
-        Log.d(TAG, "SMS 수신 sender=$sender bodyLen=${body.length}")
+        // 듀얼 SIM: 이 SMS 를 받은 SIM 의 번호를 수신자로
+        val subId = Utils.subIdFromIntent(intent)
+        val receiver = Utils.getDevicePhoneNumber(context, subId)
+        Log.d(TAG, "SMS 수신 sender=$sender bodyLen=${body.length} subId=$subId receiver=$receiver")
 
-        val receiver = Utils.getDevicePhoneNumber(context)
         Forwarder.enqueueSms(context, sender, receiver, body.toString(), timestamp)
     }
 
@@ -54,8 +56,10 @@ open class SMSReceiver : BroadcastReceiver() {
      * ForwardWorker 가 content provider 를 폴링해 준비되면 전송한다.
      */
     private fun handleMms(context: Context, intent: Intent) {
-        Log.d(TAG, "MMS(WAP_PUSH) 수신 감지")
-        val receiver = Utils.getDevicePhoneNumber(context)
+        // 수신자 번호는 ForwardWorker 가 MMS 행의 sub_id 로 다시 확인한다 (여기 값은 대체값)
+        val subId = Utils.subIdFromIntent(intent)
+        Log.d(TAG, "MMS(WAP_PUSH) 수신 감지 subId=$subId")
+        val receiver = Utils.getDevicePhoneNumber(context, subId)
         Forwarder.enqueueMms(context, receiver, System.currentTimeMillis())
 
         val extras: Bundle? = intent.extras

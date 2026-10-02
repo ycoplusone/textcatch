@@ -43,6 +43,8 @@ class ForwardWorker(
 
         private const val PREFS = "textcatch_state"
         private const val KEY_LAST_MMS_ID = "last_mms_id"
+        private const val KEY_SENT_WORK_IDS = "sent_work_ids"
+        private const val SENT_WORK_IDS_MAX = 100
     }
 
     private val client: OkHttpClient by lazy {
@@ -57,6 +59,11 @@ class ForwardWorker(
     private var pendingMmsId: Long? = null
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        // 전송은 됐는데 작업이 중단돼(네트워크 전환 등) 재실행된 경우 → 다시 보내지 않는다
+        if (isAlreadySent()) {
+            Log.d(TAG, "이미 전송된 작업 재실행 → 건너뜀 id=$id")
+            return@withContext Result.success()
+        }
         val type = inputData.getString(Forwarder.KEY_TYPE) ?: "SMS"
         val receiver = inputData.getString(Forwarder.KEY_RECEIVER) ?: ""
         val timestamp = inputData.getLong(Forwarder.KEY_TIMESTAMP, System.currentTimeMillis())
@@ -78,9 +85,9 @@ class ForwardWorker(
         }
 
         if (post(payload)) {
-            // 성공: 이력 저장(시간 + 제목 10글자) + MMS 중복 방지 id 확정
+            // 성공: 재실행 중복 방지 표시를 먼저 즉시 저장(commit) → 이력 저장
+            markSent()
             LogStore.add(applicationContext, payload.optString("body"))
-            pendingMmsId?.let { setLastMmsId(it) }
             Result.success()
         } else {
             Result.retry()
@@ -127,7 +134,7 @@ class ForwardWorker(
                     return JSONObject().apply {
                         put("type", "MMS")
                         put("sender", queryMmsSender(id))
-                        put("receiver", receiver)
+                        put("receiver", queryMmsReceiver(id) ?: receiver)
                         put("body", body.toString())
                         put("images", images)
                         put("timestamp", timestamp)
@@ -192,6 +199,18 @@ class ForwardWorker(
                 }
             }
         return 0L
+    }
+
+    /** 듀얼 SIM: MMS 를 받은 SIM(sub_id 컬럼)의 번호. 알 수 없으면 null. */
+    private fun queryMmsReceiver(mmsId: Long): String? {
+        val subId = try {
+            applicationContext.contentResolver
+                .query(Uri.parse("content://mms/$mmsId"), arrayOf("sub_id"), null, null, null)
+                ?.use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getInt(0) else null }
+        } catch (e: Exception) {
+            null // sub_id 컬럼이 없는 기기
+        } ?: return null
+        return Utils.getDevicePhoneNumber(applicationContext, subId).ifBlank { null }
     }
 
     private fun queryMmsSender(mmsId: Long): String {
@@ -300,8 +319,19 @@ class ForwardWorker(
         applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getLong(KEY_LAST_MMS_ID, -1L)
 
-    private fun setLastMmsId(id: Long) {
+    /** 이 작업(WorkRequest id)이 이미 전송 완료됐는지. 재실행돼도 id 는 같다. */
+    private fun isAlreadySent(): Boolean =
         applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putLong(KEY_LAST_MMS_ID, id).apply()
+            .getString(KEY_SENT_WORK_IDS, "")!!.split(',').contains(id.toString())
+
+    /** 전송 완료 표시 + MMS 마지막 id 를 디스크에 즉시 기록 (최근 SENT_WORK_IDS_MAX 건 유지). */
+    private fun markSent() {
+        val p = applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val ids = p.getString(KEY_SENT_WORK_IDS, "")!!.split(',').filter { it.isNotEmpty() }
+        val next = (ids + id.toString()).takeLast(SENT_WORK_IDS_MAX).joinToString(",")
+        p.edit().apply {
+            putString(KEY_SENT_WORK_IDS, next)
+            pendingMmsId?.let { putLong(KEY_LAST_MMS_ID, it) }
+        }.commit()
     }
 }
