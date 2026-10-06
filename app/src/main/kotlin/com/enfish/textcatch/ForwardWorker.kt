@@ -109,7 +109,9 @@ class ForwardWorker(
                     return@withContext Result.retry()
                 }
         } else {
-            buildSmsPayload(
+            // SMS 와 HEARTBEAT 는 intent 데이터로 즉시 payload 구성 (type 만 다름)
+            buildSimplePayload(
+                type = type,
                 sender = inputData.getString(Forwarder.KEY_SENDER) ?: "",
                 receiver = receiver,
                 body = inputData.getString(Forwarder.KEY_BODY) ?: "",
@@ -127,15 +129,16 @@ class ForwardWorker(
         }
     }
 
-    // ---------- SMS ----------
+    // ---------- SMS / HEARTBEAT ----------
 
-    private fun buildSmsPayload(
+    private fun buildSimplePayload(
+        type: String,
         sender: String,
         receiver: String,
         body: String,
         timestamp: Long
     ): JSONObject = JSONObject().apply {
-        put("type", "SMS")
+        put("type", type)
         put("sender", sender)
         put("receiver", receiver)
         put("body", body)

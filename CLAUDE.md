@@ -279,7 +279,7 @@ scripts/
   - `versionCode` 를 **1 증가** (설치 시 업데이트로 인식되도록)
 - 같은 변경에 대해 빌드 오류를 고치며 다시 빌드하는 경우는 한 번만 올린다
 - 문서(CLAUDE.md 등)/스크립트만 수정해 앱 빌드가 필요 없는 경우는 올리지 않는다
-- 현재: versionName 1.1 / versionCode 2
+- 현재: versionName 1.2 / versionCode 3
 
 ### BroadcastReceiver 수정
 - SMSReceiver.kt / MmsReceiver.kt 를 수정하면 반드시 `installDebug`로 다시 설치한다
