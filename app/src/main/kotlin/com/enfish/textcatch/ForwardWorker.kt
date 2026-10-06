@@ -1,11 +1,16 @@
 package com.enfish.textcatch
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.ContentUris
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.util.Base64
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
+import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -45,6 +50,10 @@ class ForwardWorker(
         private const val KEY_LAST_MMS_ID = "last_mms_id"
         private const val KEY_SENT_WORK_IDS = "sent_work_ids"
         private const val SENT_WORK_IDS_MAX = 100
+
+        // Android 11 이하 expedited 작업용 포그라운드 알림
+        private const val FG_CHANNEL_ID = "forward"
+        private const val FG_NOTIFICATION_ID = 1001
     }
 
     private val client: OkHttpClient by lazy {
@@ -57,6 +66,30 @@ class ForwardWorker(
 
     /** 이번에 전송한 MMS id (성공 시 중복 방지용으로 저장). */
     private var pendingMmsId: Long? = null
+
+    /**
+     * Android 11(API 30) 이하에서 setExpedited 작업은 포그라운드 서비스로 실행되며,
+     * 이때 알림 정보가 필요하다. 구현이 없으면 작업이 실패한다. (API 31+ 에선 호출되지 않음)
+     */
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        val ctx = applicationContext
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = ctx.getSystemService(NotificationManager::class.java)
+            if (nm.getNotificationChannel(FG_CHANNEL_ID) == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(FG_CHANNEL_ID, "메시지 전송", NotificationManager.IMPORTANCE_LOW)
+                )
+            }
+        }
+        val notification = NotificationCompat.Builder(ctx, FG_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setContentTitle("TextCatch")
+            .setContentText("메시지 전송 중")
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .build()
+        return ForegroundInfo(FG_NOTIFICATION_ID, notification)
+    }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         // 전송은 됐는데 작업이 중단돼(네트워크 전환 등) 재실행된 경우 → 다시 보내지 않는다
