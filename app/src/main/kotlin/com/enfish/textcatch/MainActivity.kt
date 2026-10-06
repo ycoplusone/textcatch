@@ -67,6 +67,8 @@ class MainActivity : AppCompatActivity() {
         val list = mutableListOf(
             Manifest.permission.RECEIVE_SMS,
             Manifest.permission.RECEIVE_MMS,
+            // MMS(WAP_PUSH_RECEIVED) 브로드캐스트 수신에 필요 (없으면 MmsReceiver 미호출)
+            Manifest.permission.RECEIVE_WAP_PUSH,
             Manifest.permission.READ_SMS,
             Manifest.permission.READ_PHONE_STATE
         )

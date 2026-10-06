@@ -273,6 +273,14 @@ scripts/
 - 코드를 수정하면 반드시 `assembleDebug`로 빌드해서 성공을 확인한다
 - 빌드 오류가 나면 오류 메시지를 읽고 스스로 수정을 시도한다
 
+### 버전 증가 (빌드할 때마다)
+- 코드/리소스를 수정하고 빌드할 때마다 `app/build.gradle.kts` 의 버전을 올린다
+  - `versionName` 을 **0.1 증가** (1.1 → 1.2 → … → 1.9 → 2.0)
+  - `versionCode` 를 **1 증가** (설치 시 업데이트로 인식되도록)
+- 같은 변경에 대해 빌드 오류를 고치며 다시 빌드하는 경우는 한 번만 올린다
+- 문서(CLAUDE.md 등)/스크립트만 수정해 앱 빌드가 필요 없는 경우는 올리지 않는다
+- 현재: versionName 1.1 / versionCode 2
+
 ### BroadcastReceiver 수정
 - SMSReceiver.kt / MmsReceiver.kt 를 수정하면 반드시 `installDebug`로 다시 설치한다
 - (APK를 다시 설치하지 않으면 수신 이벤트가 반영 안 됨)
