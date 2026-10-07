@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import android.provider.Settings
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 
@@ -61,6 +62,14 @@ object Utils {
             ""
         }
     }
+
+    /**
+     * 기기 고유값(ANDROID_ID). 한 기기의 여러 번호(듀얼 SIM)를 같은 기기로 묶는 용도.
+     * 권한 불필요. 공장 초기화 또는 APK 서명 키가 달라지면 값이 바뀐다.
+     */
+    @SuppressLint("HardwareIds")
+    fun getDeviceId(context: Context): String =
+        Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: ""
 
     /** SMS/WAP_PUSH 브로드캐스트에 담긴 수신 SIM 의 subscription id. 없으면 INVALID. */
     fun subIdFromIntent(intent: android.content.Intent): Int =

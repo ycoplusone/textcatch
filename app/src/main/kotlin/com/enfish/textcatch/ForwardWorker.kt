@@ -119,6 +119,9 @@ class ForwardWorker(
             )
         }
 
+        // 기기 고유값: 한 기기의 여러 번호를 서버에서 같은 기기로 묶는 용도
+        payload.put("device_id", Utils.getDeviceId(applicationContext))
+
         if (post(payload)) {
             // 성공: 재실행 중복 방지 표시를 먼저 즉시 저장(commit) → 이력 저장
             markSent()
