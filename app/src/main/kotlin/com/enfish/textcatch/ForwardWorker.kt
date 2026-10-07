@@ -109,13 +109,18 @@ class ForwardWorker(
                     return@withContext Result.retry()
                 }
         } else {
-            buildSmsPayload(
+            // SMS 와 HEARTBEAT 는 intent 데이터로 즉시 payload 구성 (type 만 다름)
+            buildSimplePayload(
+                type = type,
                 sender = inputData.getString(Forwarder.KEY_SENDER) ?: "",
                 receiver = receiver,
                 body = inputData.getString(Forwarder.KEY_BODY) ?: "",
                 timestamp = timestamp
             )
         }
+
+        // 기기 고유값: 한 기기의 여러 번호를 서버에서 같은 기기로 묶는 용도
+        payload.put("device_id", Utils.getDeviceId(applicationContext))
 
         if (post(payload)) {
             // 성공: 재실행 중복 방지 표시를 먼저 즉시 저장(commit) → 이력 저장
@@ -127,15 +132,16 @@ class ForwardWorker(
         }
     }
 
-    // ---------- SMS ----------
+    // ---------- SMS / HEARTBEAT ----------
 
-    private fun buildSmsPayload(
+    private fun buildSimplePayload(
+        type: String,
         sender: String,
         receiver: String,
         body: String,
         timestamp: Long
     ): JSONObject = JSONObject().apply {
-        put("type", "SMS")
+        put("type", type)
         put("sender", sender)
         put("receiver", receiver)
         put("body", body)
@@ -330,7 +336,7 @@ class ForwardWorker(
 
     private fun post(payload: JSONObject): Boolean {
         val url = Utils.getApiUrl(applicationContext)
-        Log.d(TAG, "API 전송 → $url : ${payload.optString("type")}")
+        Log.d(TAG, "API 전송 → $url : ${payload.optString("type")} device_id=${payload.optString("device_id")}")
         val request = Request.Builder()
             .url(url)
             .post(payload.toString().toRequestBody(JSON))
