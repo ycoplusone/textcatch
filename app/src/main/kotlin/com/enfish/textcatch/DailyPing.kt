@@ -9,32 +9,33 @@ import java.util.Calendar
 import java.util.Date
 
 /**
- * 매일 01시대에 "앱이 정상 동작 중"임을 알리는 정기 API 호출(heartbeat)을 예약한다.
+ * 6시간마다(01/07/13/19시대) "앱이 정상 동작 중"임을 알리는 정기 API 호출(heartbeat)을 예약한다.
  * - 실제 SMS 발송이 아니라, 기존 전송 경로(ForwardWorker)로 heartbeat payload 만 보낸다.
- * - 발송 분 = 기기 번호 끝자리 (예: ...7 → 01:07).
- * - AlarmManager 로 매일 1회, 발송 후 다음 날로 다시 예약(재부팅 시 DailyPingReceiver 가 재예약).
+ * - 발송 분 = 기기 번호 끝자리 (예: ...7 → 01:07, 07:07, 13:07, 19:07).
+ * - AlarmManager 로 1회씩 예약, 발송 후 다음 회차로 다시 예약(재부팅 시 DailyPingReceiver 가 재예약).
  */
 object DailyPing {
     const val TAG = "DailyPing"
     const val ACTION_FIRE = "com.enfish.textcatch.action.DAILY_PING"
     const val BODY = "TextCatch 테스트"
-    const val HOUR = 1
+    const val FIRST_HOUR = 1
+    const val INTERVAL_HOURS = 6
     private const val REQUEST_CODE = 7001
 
     /** 기기 번호 끝자리(0~9) → 분. 숫자가 없으면 0. */
     fun minuteFromNumber(number: String): Int =
         number.lastOrNull { it.isDigit() }?.minus('0') ?: 0
 
-    /** 오늘 01:[분] 이 지났으면 내일, 아니면 오늘 그 시각의 epoch millis. */
+    /** 01/07/13/19시 [분] 중 지금 이후 가장 가까운 시각의 epoch millis. */
     fun nextTriggerMillis(number: String, now: Long = System.currentTimeMillis()): Long {
         val cal = Calendar.getInstance().apply {
             timeInMillis = now
-            set(Calendar.HOUR_OF_DAY, HOUR)
+            set(Calendar.HOUR_OF_DAY, FIRST_HOUR)
             set(Calendar.MINUTE, minuteFromNumber(number))
             set(Calendar.SECOND, 0)
             set(Calendar.MILLISECOND, 0)
         }
-        if (cal.timeInMillis <= now) cal.add(Calendar.DAY_OF_YEAR, 1)
+        while (cal.timeInMillis <= now) cal.add(Calendar.HOUR_OF_DAY, INTERVAL_HOURS)
         return cal.timeInMillis
     }
 

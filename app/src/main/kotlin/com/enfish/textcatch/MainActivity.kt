@@ -54,7 +54,7 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, LogActivity::class.java))
         }
 
-        // 매일 정기 상태 확인(heartbeat) API 호출 예약 (01시대, 기기 번호 끝자리 분)
+        // 6시간마다 정기 상태 확인(heartbeat) API 호출 예약 (01/07/13/19시대, 기기 번호 끝자리 분)
         DailyPing.schedule(this)
 
         requestAllPermissions()

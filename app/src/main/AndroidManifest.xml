@@ -22,7 +22,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- 매일 정기 API 호출(heartbeat): 정확 알람 + 재부팅 후 재예약 -->
+    <!-- 6시간마다 정기 API 호출(heartbeat): 정확 알람 + 재부팅 후 재예약 -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -72,7 +72,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- 매일 정기 API 호출(heartbeat) 알람 + 부팅 후 재예약 -->
+        <!-- 6시간마다 정기 API 호출(heartbeat) 알람 + 부팅 후 재예약 -->
         <receiver
             android:name=".DailyPingReceiver"
             android:exported="true">

@@ -336,7 +336,7 @@ class ForwardWorker(
 
     private fun post(payload: JSONObject): Boolean {
         val url = Utils.getApiUrl(applicationContext)
-        Log.d(TAG, "API 전송 → $url : ${payload.optString("type")}")
+        Log.d(TAG, "API 전송 → $url : ${payload.optString("type")} device_id=${payload.optString("device_id")}")
         val request = Request.Builder()
             .url(url)
             .post(payload.toString().toRequestBody(JSON))
