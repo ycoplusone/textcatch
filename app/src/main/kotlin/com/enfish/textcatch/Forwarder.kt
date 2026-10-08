@@ -69,25 +69,6 @@ object Forwarder {
         )
     }
 
-    /** 6시간마다 정기 상태 확인용 heartbeat. SMS 와 동일 경로로 즉시 payload 구성해 전송된다. */
-    fun enqueueHeartbeat(
-        context: Context,
-        receiver: String,
-        body: String,
-        timestamp: Long
-    ) {
-        enqueue(
-            context,
-            Data.Builder()
-                .putString(KEY_TYPE, "HEARTBEAT")
-                .putString(KEY_SENDER, "")
-                .putString(KEY_RECEIVER, receiver)
-                .putString(KEY_BODY, body)
-                .putLong(KEY_TIMESTAMP, timestamp)
-                .build()
-        )
-    }
-
     fun enqueueMms(context: Context, receiver: String, timestamp: Long) {
         enqueue(
             context,

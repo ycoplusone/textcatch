@@ -95,7 +95,7 @@ dependencies {
 
 ## API 명세 (서버가 받을 데이터)
 
-- 모든 전송(SMS/MMS/HEARTBEAT)에 `device_id`(ANDROID_ID, `Utils.getDeviceId`) 포함.
+- 모든 전송(SMS/MMS)에 `device_id`(ANDROID_ID, `Utils.getDeviceId`) 포함.
   한 기기의 여러 번호를 같은 기기로 묶는 용도. 공장 초기화·APK 서명 키 변경 시 값이 바뀐다.
 
 ### SMS 예시
@@ -284,7 +284,7 @@ scripts/
   - `versionCode` 를 **1 증가** (설치 시 업데이트로 인식되도록)
 - 같은 변경에 대해 빌드 오류를 고치며 다시 빌드하는 경우는 한 번만 올린다
 - 문서(CLAUDE.md 등)/스크립트만 수정해 앱 빌드가 필요 없는 경우는 올리지 않는다
-- 현재: versionName 1.5 / versionCode 6
+- 현재: versionName 1.6 / versionCode 7
 
 ### BroadcastReceiver 수정
 - SMSReceiver.kt / MmsReceiver.kt 를 수정하면 반드시 `installDebug`로 다시 설치한다
