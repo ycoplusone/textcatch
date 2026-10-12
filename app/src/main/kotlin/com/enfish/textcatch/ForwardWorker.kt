@@ -109,7 +109,7 @@ class ForwardWorker(
                     return@withContext Result.retry()
                 }
         } else {
-            // SMS 는 intent 데이터로 즉시 payload 구성
+            // SMS 와 HEARTBEAT 는 intent 데이터로 즉시 payload 구성 (type 만 다름)
             buildSimplePayload(
                 type = type,
                 sender = inputData.getString(Forwarder.KEY_SENDER) ?: "",
@@ -132,7 +132,7 @@ class ForwardWorker(
         }
     }
 
-    // ---------- SMS ----------
+    // ---------- SMS / HEARTBEAT ----------
 
     private fun buildSimplePayload(
         type: String,
