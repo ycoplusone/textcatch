@@ -78,7 +78,10 @@ ForwardWorker.doWork():
 REST API 호출 (POST) — OkHttp
     ↓
 성공: LogStore 에 이력 저장 → Result.success()
-실패: Result.retry() (지수 백오프 재시도)
+일시 실패(네트워크 예외 / 408 / 429 / 5xx): Result.retry() (10s 지수 백오프, 최대 5h 간격)
+영구 실패(그 외 4xx) 또는 재시도 한도(MAX_RUN_ATTEMPTS=15회, 약 하루) 초과:
+  전송 포기 → LogStore 에 "[실패 코드] 제목" 기록 → MMS 는 last_mms_id 넘김
+  → Result.success() 로 종료 (MMS 체인이 막히지 않도록 failure 를 쓰지 않음)
 ```
 
 ## 설정 (build.gradle.kts에 추가)
@@ -284,7 +287,7 @@ scripts/
   - `versionCode` 를 **1 증가** (설치 시 업데이트로 인식되도록)
 - 같은 변경에 대해 빌드 오류를 고치며 다시 빌드하는 경우는 한 번만 올린다
 - 문서(CLAUDE.md 등)/스크립트만 수정해 앱 빌드가 필요 없는 경우는 올리지 않는다
-- 현재: versionName 1.7 / versionCode 8
+- 현재: versionName 1.8 / versionCode 9
 
 ### BroadcastReceiver 수정
 - SMSReceiver.kt / MmsReceiver.kt 를 수정하면 반드시 `installDebug`로 다시 설치한다

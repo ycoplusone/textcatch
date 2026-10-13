@@ -30,7 +30,10 @@ import java.util.concurrent.TimeUnit
  * - ① MMS: WAP Push 직후에는 본문/이미지가 아직 안 들어와 있으므로,
  *   content provider 를 짧게 폴링해서 준비될 때까지 기다린 뒤 전송한다.
  *   그래도 안 오면 Result.retry() 로 WorkManager 가 나중에 다시 시도한다.
- * - ② 실패 시 Result.retry() → 지수 백오프 재시도.
+ * - ② 일시적 실패(네트워크 예외, 408/429/5xx)는 Result.retry() → 지수 백오프 재시도.
+ * - ③ 영구 실패(그 외 4xx 등)나 재시도 한도(MAX_RUN_ATTEMPTS) 초과는 포기하고
+ *   실패 이력을 남긴다. MMS 체인이 막히지 않도록 Result.failure() 가 아닌
+ *   Result.success() 로 끝낸다 (체인 중간 failure 는 뒤에 붙은 작업까지 실패시킴).
  */
 class ForwardWorker(
     appContext: Context,
@@ -50,6 +53,9 @@ class ForwardWorker(
         private const val KEY_LAST_MMS_ID = "last_mms_id"
         private const val KEY_SENT_WORK_IDS = "sent_work_ids"
         private const val SENT_WORK_IDS_MAX = 100
+
+        // 재시도 한도: 실행 15회 (10초 지수 백오프, 최대 5시간 간격 → 약 하루)
+        private const val MAX_RUN_ATTEMPTS = 15
 
         // Android 11 이하 expedited 작업용 포그라운드 알림
         private const val FG_CHANNEL_ID = "forward"
@@ -104,7 +110,11 @@ class ForwardWorker(
         val payload: JSONObject = if (type == "MMS") {
             buildMmsPayload(receiver, timestamp)
                 ?: run {
-                    // 아직 MMS 콘텐츠가 안 옴 → 나중에 다시 시도
+                    // 아직 MMS 콘텐츠가 안 옴 → 나중에 다시 시도 (한도 초과 시 포기: 체인 해제)
+                    if (isLastAttempt()) {
+                        Log.w(TAG, "MMS 콘텐츠 미도착, 재시도 한도 초과 → 포기")
+                        return@withContext Result.success()
+                    }
                     Log.d(TAG, "MMS 콘텐츠 미도착 → 재시도 예약")
                     return@withContext Result.retry()
                 }
@@ -122,15 +132,33 @@ class ForwardWorker(
         // 기기 고유값: 한 기기의 여러 번호를 서버에서 같은 기기로 묶는 용도
         payload.put("device_id", Utils.getDeviceId(applicationContext))
 
-        if (post(payload)) {
-            // 성공: 재실행 중복 방지 표시를 먼저 즉시 저장(commit) → 이력 저장
-            markSent()
-            LogStore.add(applicationContext, payload.optString("body"))
-            Result.success()
-        } else {
-            Result.retry()
+        when (val outcome = post(payload)) {
+            is PostOutcome.Success -> {
+                // 성공: 재실행 중복 방지 표시를 먼저 즉시 저장(commit) → 이력 저장
+                markSent()
+                LogStore.add(applicationContext, payload.optString("body"))
+                Result.success()
+            }
+            is PostOutcome.Permanent -> giveUp(payload, outcome.reason)
+            is PostOutcome.Retryable ->
+                if (isLastAttempt()) giveUp(payload, "${outcome.reason} 한도초과")
+                else Result.retry()
         }
     }
+
+    /**
+     * 전송 포기: MMS 는 last_mms_id 를 넘겨 다음 MMS 가 막히지 않게 하고,
+     * 실패 이력을 남긴 뒤 success 로 종료 (재실행/체인 중단 방지).
+     */
+    private fun giveUp(payload: JSONObject, reason: String): Result {
+        Log.w(TAG, "전송 포기 ($reason) type=${payload.optString("type")} attempt=${runAttemptCount + 1}")
+        markSent()
+        LogStore.add(applicationContext, payload.optString("body"), failReason = reason)
+        return Result.success()
+    }
+
+    /** 이번 실행이 재시도 한도의 마지막 실행인지 (runAttemptCount 는 0부터). */
+    private fun isLastAttempt(): Boolean = runAttemptCount + 1 >= MAX_RUN_ATTEMPTS
 
     // ---------- SMS / HEARTBEAT ----------
 
@@ -334,7 +362,15 @@ class ForwardWorker(
 
     // ---------- 전송 ----------
 
-    private fun post(payload: JSONObject): Boolean {
+    private sealed class PostOutcome {
+        object Success : PostOutcome()
+        /** 다시 보내도 같은 결과일 응답 (400/401/403/404/422 등). */
+        class Permanent(val reason: String) : PostOutcome()
+        /** 일시적 실패: 네트워크 예외, 408/429/5xx 등. */
+        class Retryable(val reason: String) : PostOutcome()
+    }
+
+    private fun post(payload: JSONObject): PostOutcome {
         val url = Utils.getApiUrl(applicationContext)
         Log.d(TAG, "API 전송 → $url : ${payload.optString("type")} device_id=${payload.optString("device_id")}")
         val request = Request.Builder()
@@ -344,11 +380,19 @@ class ForwardWorker(
         return try {
             client.newCall(request).execute().use { resp ->
                 Log.d(TAG, "API 응답 code=${resp.code}")
-                resp.isSuccessful
+                val code = resp.code
+                when {
+                    resp.isSuccessful -> PostOutcome.Success
+                    code == 408 || code == 429 || code >= 500 -> {
+                        Log.d(TAG, "재시도 예정 code=$code attempt=${runAttemptCount + 1}/$MAX_RUN_ATTEMPTS")
+                        PostOutcome.Retryable(code.toString())
+                    }
+                    else -> PostOutcome.Permanent(code.toString())
+                }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "API 전송 예외 (재시도 예정)", e)
-            false
+            Log.e(TAG, "API 전송 예외 (재시도 예정) attempt=${runAttemptCount + 1}/$MAX_RUN_ATTEMPTS", e)
+            PostOutcome.Retryable("예외")
         }
     }
 

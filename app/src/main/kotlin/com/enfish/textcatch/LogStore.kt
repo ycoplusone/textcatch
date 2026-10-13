@@ -22,10 +22,14 @@ object LogStore {
 
     data class Entry(val time: Long, val title: String)
 
-    /** 송신 성공 시 호출 — body 의 앞 10글자를 제목으로 저장. */
+    /**
+     * 송신 결과 기록 — body 의 앞 10글자를 제목으로 저장.
+     * failReason 이 있으면 전송 포기 건으로 "[실패 400] 제목" 형태로 남긴다.
+     */
     @Synchronized
-    fun add(context: Context, rawBody: String) {
-        val title = rawBody.trim().replace(Regex("\\s+"), " ").take(10)
+    fun add(context: Context, rawBody: String, failReason: String? = null) {
+        val head = rawBody.trim().replace(Regex("\\s+"), " ").take(10)
+        val title = if (failReason != null) "[실패 $failReason] $head" else head
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val old = JSONArray(p.getString(KEY, "[]"))
 
