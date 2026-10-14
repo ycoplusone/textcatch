@@ -9,10 +9,16 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.pm.PackageInfoCompat
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.enfish.textcatch.databinding.ActivityMainBinding
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
- * 설정 UI — API URL 저장, 권한 요청, 테스트 전송.
+ * 설정 UI — API URL 저장, 권한 요청, 테스트 전송, 앱 버전 / 전송 대기열 표시.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -35,6 +41,8 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         binding.editApiUrl.setText(Utils.getApiUrl(this))
+        binding.textVersion.text = versionText()
+        observeQueue()
 
         binding.btnSave.setOnClickListener {
             val url = binding.editApiUrl.text?.toString()?.trim().orEmpty()
@@ -102,6 +110,38 @@ class MainActivity : AppCompatActivity() {
             append("기기 번호(수신자): $phone\n")
             append("API URL: ${Utils.getApiUrl(this@MainActivity)}")
         }
+    }
+
+    private fun versionText(): String = try {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        "v${info.versionName} (${PackageInfoCompat.getLongVersionCode(info)})"
+    } catch (e: Exception) {
+        "v?"
+    }
+
+    /**
+     * 전송 대기열 실시간 표시. WorkManager 는 워커 클래스 이름을 태그로 자동 부여하므로
+     * 이 기능 이전에 쌓인 작업도 함께 조회된다.
+     */
+    private fun observeQueue() {
+        val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault())
+        WorkManager.getInstance(applicationContext)
+            .getWorkInfosByTagLiveData(ForwardWorker::class.java.name)
+            .observe(this) { infos ->
+                val enqueued = infos.filter { it.state == WorkInfo.State.ENQUEUED }
+                val waiting = enqueued.count { it.runAttemptCount == 0 }  // 첫 실행 전(네트워크 대기 등)
+                val retrying = enqueued.filter { it.runAttemptCount > 0 } // 실패 후 백오프 중
+                val running = infos.count { it.state == WorkInfo.State.RUNNING }
+                val blocked = infos.count { it.state == WorkInfo.State.BLOCKED } // MMS 체인 순서 대기
+                binding.textQueue.text = buildString {
+                    append("전송 대기열: ${waiting + retrying.size + running + blocked}건\n")
+                    append("발송 대기 $waiting · 재시도 대기 ${retrying.size} · 전송 중 $running · 순서 대기 $blocked")
+                    retrying.minOfOrNull { it.nextScheduleTimeMillis }?.let { next ->
+                        val maxTry = retrying.maxOf { it.runAttemptCount }
+                        append("\n다음 재시도: ${fmt.format(Date(next))} (최다 ${maxTry}회 실패)")
+                    }
+                }
+            }
     }
 
     /** 실제 수신 없이 전송 경로를 점검하는 테스트 버튼. */

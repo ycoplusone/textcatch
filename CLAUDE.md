@@ -54,7 +54,8 @@ SMS/MMS를 수신하면 **즉시 캐치**하고 REST API URL로 실시간 전송
   MMS 는 content provider 폴링, 실패 시 `Result.retry()` 로 재시도
 - **LogStore (object)**: 송신 이력 저장 (SharedPreferences, "시간 + 제목 10글자", 최신순 최대 300건)
 - **LogActivity**: 송신 이력 화면 (새로고침 / 지우기)
-- **MainActivity**: 설정 UI & 테스트 (API URL 설정, 권한 요청, 테스트 전송, 로그 보기)
+- **MainActivity**: 설정 UI & 테스트 (API URL 설정, 권한 요청, 테스트 전송, 로그 보기,
+  앱 버전 표기, 전송 대기열 실시간 표시 — 발송 대기/재시도 대기/전송 중/순서 대기)
 - **Utils (object)**: API URL 저장/조회, 기기 전화번호(수신자) 추출
 
 > 참고: 이전의 `SMSForwardService (IntentService)` 는 제거되었고 WorkManager 로 대체되었다.
@@ -152,6 +153,10 @@ scripts\install.bat                     # 기기 1대 연결 시
 scripts\install.bat -Serial <시리얼>     # 여러 대 연결 시 (adb devices 로 확인)
 scripts\install.bat -Apk D:\경로\app-debug.apk   # 다른 APK 지정
 ```
+- `scripts\setup.bat [APK경로]` : PowerShell 없이 cmd 만으로 설치 + appops 해제 + pm grant 6개 +
+  배터리/백그라운드(deviceidle 화이트리스트, RUN_ANY_IN_BACKGROUND, standby-bucket active) 설정 후
+  설치 여부와 기기의 versionName/versionCode/lastUpdateTime 출력. APK 기본값은 같은 폴더 `app-debug.apk`.
+  시작 시 `adb disconnect` 로 무선 adb 연결을 끊으므로 USB 연결 기준. CRLF + UTF-8(chcp 65001) 유지
 - `install.bat` 은 실행 정책 우회(`-ExecutionPolicy Bypass`)로 같은 폴더의 `install.ps1` 을 실행하는 래퍼
 - 수행 순서: 기기 확인 → `adb install -r` → 제한된 설정 해제(appops) → `pm grant` 7개 → 권한 상태 출력 → 앱 실행
 - 샤오미에서 `INSTALL_FAILED_USER_RESTRICTED` 면 APK 를 `/sdcard/Download/textcatch.apk` 로 복사하고,
@@ -287,7 +292,7 @@ scripts/
   - `versionCode` 를 **1 증가** (설치 시 업데이트로 인식되도록)
 - 같은 변경에 대해 빌드 오류를 고치며 다시 빌드하는 경우는 한 번만 올린다
 - 문서(CLAUDE.md 등)/스크립트만 수정해 앱 빌드가 필요 없는 경우는 올리지 않는다
-- 현재: versionName 1.8 / versionCode 9
+- 현재: versionName 1.9 / versionCode 10
 
 ### BroadcastReceiver 수정
 - SMSReceiver.kt / MmsReceiver.kt 를 수정하면 반드시 `installDebug`로 다시 설치한다
