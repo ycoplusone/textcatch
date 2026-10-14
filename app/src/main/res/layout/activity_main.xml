@@ -14,8 +14,26 @@
             android:layout_height="wrap_content"
             android:text="@string/app_name"
             android:textSize="22sp"
-            android:textStyle="bold"
-            android:paddingBottom="16dp" />
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/textVersion"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="12sp"
+            android:text="v" />
+
+        <TextView
+            android:id="@+id/textQueue"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="16dp"
+            android:padding="10dp"
+            android:background="#14000000"
+            android:textSize="14sp"
+            android:fontFamily="monospace"
+            android:text="전송 대기열: 확인 중..." />
 
         <TextView
             android:layout_width="wrap_content"
