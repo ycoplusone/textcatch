@@ -146,14 +146,19 @@ class MainActivity : AppCompatActivity() {
 
     /** 실제 수신 없이 전송 경로를 점검하는 테스트 버튼. */
     private fun sendTestPayload() {
-        Forwarder.enqueueSms(
-            context = this,
-            sender = "01012345678",
-            receiver = Utils.getDevicePhoneNumber(this),
-            body = "테스트 메시지 from MainActivity",
-            timestamp = System.currentTimeMillis()
-        )
-        toast("테스트 전송을 큐에 넣었습니다 (로그 보기 / logcat 확인)")
+        // 실제 SMS 수신과 같은 경로: 직접 전송 → 실패 시 WorkManager
+        val ctx = applicationContext
+        val receiver = Utils.getDevicePhoneNumber(this)
+        Thread {
+            Forwarder.forwardSms(
+                context = ctx,
+                sender = "01012345678",
+                receiver = receiver,
+                body = "테스트 메시지 from MainActivity",
+                timestamp = System.currentTimeMillis()
+            )
+        }.start()
+        toast("테스트 전송 시작 (로그 보기 / logcat 확인)")
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()

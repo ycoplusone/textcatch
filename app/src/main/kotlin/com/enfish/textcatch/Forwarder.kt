@@ -1,6 +1,7 @@
 package com.enfish.textcatch
 
 import android.content.Context
+import android.util.Log
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.Data
@@ -9,6 +10,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
@@ -23,6 +25,10 @@ object Forwarder {
     const val KEY_RECEIVER = "receiver"
     const val KEY_BODY = "body"
     const val KEY_TIMESTAMP = "timestamp"
+    const val KEY_RECEIVED_AT = "received_at"
+    const val KEY_MSG_ID = "msg_id"
+
+    private const val TAG = "Forwarder"
 
     /** MMS 작업은 같은 content provider 를 보므로 직렬 실행(동시 실행 시 같은 건 중복 전송 방지). */
     private const val MMS_CHAIN = "mms_forward"
@@ -50,12 +56,58 @@ object Forwarder {
         }
     }
 
+    /**
+     * SMS 빠른 경로: 수신 즉시 직접 POST 를 1회 시도하고, 일시적 실패일 때만 WorkManager 로 넘긴다.
+     * (WorkManager 스케줄링/expedited quota/Doze 대기를 거치지 않아 평소 지연이 가장 작다)
+     * 네트워크를 쓰므로 메인 스레드가 아닌 곳(goAsync 백그라운드 스레드 등)에서 호출해야 한다.
+     * 최대 소요 ≈ Api 의 fast callTimeout(8초).
+     */
+    fun forwardSms(
+        context: Context,
+        sender: String,
+        receiver: String,
+        body: String,
+        timestamp: Long,
+        receivedAt: Long = System.currentTimeMillis()
+    ) {
+        val msgId = UUID.randomUUID().toString()
+        val outcome = try {
+            val payload = Api.buildPayload(
+                context, "SMS", sender, receiver, body, timestamp,
+                msgId, receivedAt, attempt = 1, path = "direct"
+            )
+            Api.post(context, payload, fast = true).also {
+                when (it) {
+                    is Api.PostOutcome.Success -> LogStore.add(
+                        context, body, delayMs = payload.getLong("sent_at") - receivedAt,
+                        attempt = 1, via = LogStore.VIA_DIRECT
+                    )
+                    is Api.PostOutcome.Permanent -> LogStore.add(
+                        context, body, failReason = it.reason,
+                        delayMs = payload.getLong("sent_at") - receivedAt,
+                        attempt = 1, via = LogStore.VIA_DIRECT
+                    )
+                    is Api.PostOutcome.Retryable -> Unit
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "직접 전송 중 예외 → 워커로 넘김", e)
+            Api.PostOutcome.Retryable("예외")
+        }
+        if (outcome is Api.PostOutcome.Retryable) {
+            Log.d(TAG, "직접 전송 실패(${outcome.reason}) → WorkManager 재시도로 넘김 msg_id=$msgId")
+            enqueueSms(context, sender, receiver, body, timestamp, receivedAt, msgId)
+        }
+    }
+
     fun enqueueSms(
         context: Context,
         sender: String,
         receiver: String,
         body: String,
-        timestamp: Long
+        timestamp: Long,
+        receivedAt: Long = System.currentTimeMillis(),
+        msgId: String = UUID.randomUUID().toString()
     ) {
         enqueue(
             context,
@@ -65,6 +117,8 @@ object Forwarder {
                 .putString(KEY_RECEIVER, receiver)
                 .putString(KEY_BODY, body)
                 .putLong(KEY_TIMESTAMP, timestamp)
+                .putLong(KEY_RECEIVED_AT, receivedAt)
+                .putString(KEY_MSG_ID, msgId)
                 .build()
         )
     }
@@ -84,6 +138,8 @@ object Forwarder {
                 .putString(KEY_RECEIVER, receiver)
                 .putString(KEY_BODY, body)
                 .putLong(KEY_TIMESTAMP, timestamp)
+                .putLong(KEY_RECEIVED_AT, System.currentTimeMillis())
+                .putString(KEY_MSG_ID, UUID.randomUUID().toString())
                 .build()
         )
     }
@@ -95,6 +151,8 @@ object Forwarder {
                 .putString(KEY_TYPE, "MMS")
                 .putString(KEY_RECEIVER, receiver)
                 .putLong(KEY_TIMESTAMP, timestamp)
+                .putLong(KEY_RECEIVED_AT, timestamp)
+                .putString(KEY_MSG_ID, UUID.randomUUID().toString())
                 .build(),
             uniqueChain = MMS_CHAIN
         )

@@ -15,14 +15,9 @@ import androidx.work.WorkerParameters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-import java.util.concurrent.TimeUnit
 
 /**
  * 메시지 데이터를 추출해 REST API 로 POST 하는 WorkManager 워커.
@@ -30,6 +25,7 @@ import java.util.concurrent.TimeUnit
  * - ① MMS: WAP Push 직후에는 본문/이미지가 아직 안 들어와 있으므로,
  *   content provider 를 짧게 폴링해서 준비될 때까지 기다린 뒤 전송한다.
  *   그래도 안 오면 Result.retry() 로 WorkManager 가 나중에 다시 시도한다.
+ * - 전송/응답 판정은 Api.post 공통 사용 (SMS 직접 전송 실패분도 여기로 넘어온다).
  * - ② 일시적 실패(네트워크 예외, 408/429/5xx)는 Result.retry() → 지수 백오프 재시도.
  * - ③ 영구 실패(그 외 4xx 등)나 재시도 한도(MAX_RUN_ATTEMPTS) 초과는 포기하고
  *   실패 이력을 남긴다. MMS 체인이 막히지 않도록 Result.failure() 가 아닌
@@ -42,7 +38,6 @@ class ForwardWorker(
 
     companion object {
         private const val TAG = "ForwardWorker"
-        private val JSON = "application/json; charset=utf-8".toMediaType()
 
         // MMS 폴링: 1.5초 간격 x 6회 (약 9초) 동안 콘텐츠 도착 대기
         private const val MMS_POLL_TRIES = 6
@@ -60,14 +55,6 @@ class ForwardWorker(
         // Android 11 이하 expedited 작업용 포그라운드 알림
         private const val FG_CHANNEL_ID = "forward"
         private const val FG_NOTIFICATION_ID = 1001
-    }
-
-    private val client: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .writeTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .build()
     }
 
     /** 이번에 전송한 MMS id (성공 시 중복 방지용으로 저장). */
@@ -106,6 +93,10 @@ class ForwardWorker(
         val type = inputData.getString(Forwarder.KEY_TYPE) ?: "SMS"
         val receiver = inputData.getString(Forwarder.KEY_RECEIVER) ?: ""
         val timestamp = inputData.getLong(Forwarder.KEY_TIMESTAMP, System.currentTimeMillis())
+        // 이 기능 이전에 쌓인 작업은 값이 없으므로 timestamp / 작업 id 로 대체
+        val receivedAt = inputData.getLong(Forwarder.KEY_RECEIVED_AT, timestamp)
+        val msgId = inputData.getString(Forwarder.KEY_MSG_ID) ?: id.toString()
+        val attempt = runAttemptCount + 1
 
         val payload: JSONObject = if (type == "MMS") {
             buildMmsPayload(receiver, timestamp)
@@ -120,29 +111,40 @@ class ForwardWorker(
                 }
         } else {
             // SMS 와 HEARTBEAT 는 intent 데이터로 즉시 payload 구성 (type 만 다름)
-            buildSimplePayload(
+            Api.buildPayload(
+                applicationContext,
                 type = type,
                 sender = inputData.getString(Forwarder.KEY_SENDER) ?: "",
                 receiver = receiver,
                 body = inputData.getString(Forwarder.KEY_BODY) ?: "",
-                timestamp = timestamp
+                timestamp = timestamp,
+                msgId = msgId,
+                receivedAt = receivedAt,
+                attempt = attempt,
+                path = "worker"
             )
         }
+        if (type == "MMS") Api.stamp(payload, applicationContext, msgId, receivedAt, attempt, "worker")
 
-        // 기기 고유값: 한 기기의 여러 번호를 서버에서 같은 기기로 묶는 용도
-        payload.put("device_id", Utils.getDeviceId(applicationContext))
-
-        when (val outcome = post(payload)) {
-            is PostOutcome.Success -> {
+        when (val outcome = Api.post(applicationContext, payload)) {
+            is Api.PostOutcome.Success -> {
                 // 성공: 재실행 중복 방지 표시를 먼저 즉시 저장(commit) → 이력 저장
                 markSent()
-                LogStore.add(applicationContext, payload.optString("body"))
+                LogStore.add(
+                    applicationContext, payload.optString("body"),
+                    delayMs = payload.getLong("sent_at") - receivedAt,
+                    attempt = attempt, via = LogStore.VIA_WORKER
+                )
                 Result.success()
             }
-            is PostOutcome.Permanent -> giveUp(payload, outcome.reason)
-            is PostOutcome.Retryable ->
+            is Api.PostOutcome.Permanent -> giveUp(payload, outcome.reason)
+            is Api.PostOutcome.Retryable -> {
                 if (isLastAttempt()) giveUp(payload, "${outcome.reason} 한도초과")
-                else Result.retry()
+                else {
+                    Log.d(TAG, "재시도 예정 (${outcome.reason}) attempt=$attempt/$MAX_RUN_ATTEMPTS")
+                    Result.retry()
+                }
+            }
         }
     }
 
@@ -153,28 +155,16 @@ class ForwardWorker(
     private fun giveUp(payload: JSONObject, reason: String): Result {
         Log.w(TAG, "전송 포기 ($reason) type=${payload.optString("type")} attempt=${runAttemptCount + 1}")
         markSent()
-        LogStore.add(applicationContext, payload.optString("body"), failReason = reason)
+        LogStore.add(
+            applicationContext, payload.optString("body"), failReason = reason,
+            delayMs = payload.optLong("sent_at") - payload.optLong("received_at"),
+            attempt = runAttemptCount + 1, via = LogStore.VIA_WORKER
+        )
         return Result.success()
     }
 
     /** 이번 실행이 재시도 한도의 마지막 실행인지 (runAttemptCount 는 0부터). */
     private fun isLastAttempt(): Boolean = runAttemptCount + 1 >= MAX_RUN_ATTEMPTS
-
-    // ---------- SMS / HEARTBEAT ----------
-
-    private fun buildSimplePayload(
-        type: String,
-        sender: String,
-        receiver: String,
-        body: String,
-        timestamp: Long
-    ): JSONObject = JSONObject().apply {
-        put("type", type)
-        put("sender", sender)
-        put("receiver", receiver)
-        put("body", body)
-        put("timestamp", timestamp)
-    }
 
     // ---------- MMS ----------
 
@@ -357,42 +347,6 @@ class ForwardWorker(
         } catch (e: Exception) {
             Log.e(TAG, "이미지 파트 읽기 실패 id=$partId", e)
             null
-        }
-    }
-
-    // ---------- 전송 ----------
-
-    private sealed class PostOutcome {
-        object Success : PostOutcome()
-        /** 다시 보내도 같은 결과일 응답 (400/401/403/404/422 등). */
-        class Permanent(val reason: String) : PostOutcome()
-        /** 일시적 실패: 네트워크 예외, 408/429/5xx 등. */
-        class Retryable(val reason: String) : PostOutcome()
-    }
-
-    private fun post(payload: JSONObject): PostOutcome {
-        val url = Utils.getApiUrl(applicationContext)
-        Log.d(TAG, "API 전송 → $url : ${payload.optString("type")} device_id=${payload.optString("device_id")}")
-        val request = Request.Builder()
-            .url(url)
-            .post(payload.toString().toRequestBody(JSON))
-            .build()
-        return try {
-            client.newCall(request).execute().use { resp ->
-                Log.d(TAG, "API 응답 code=${resp.code}")
-                val code = resp.code
-                when {
-                    resp.isSuccessful -> PostOutcome.Success
-                    code == 408 || code == 429 || code >= 500 -> {
-                        Log.d(TAG, "재시도 예정 code=$code attempt=${runAttemptCount + 1}/$MAX_RUN_ATTEMPTS")
-                        PostOutcome.Retryable(code.toString())
-                    }
-                    else -> PostOutcome.Permanent(code.toString())
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "API 전송 예외 (재시도 예정) attempt=${runAttemptCount + 1}/$MAX_RUN_ATTEMPTS", e)
-            PostOutcome.Retryable("예외")
         }
     }
 

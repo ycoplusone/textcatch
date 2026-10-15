@@ -49,7 +49,9 @@ SMS/MMS를 수신하면 **즉시 캐치**하고 REST API URL로 실시간 전송
 - **SMSReceiver (BroadcastReceiver)**: SMS 수신 즉시 감지 (SMS_RECEIVED)
 - **MmsReceiver (SMSReceiver 상속)**: MMS(WAP_PUSH_RECEIVED) 감지.
   같은 클래스를 매니페스트에 중복 선언할 수 없어 별도 클래스로 등록 (권한이 서로 다름)
-- **Forwarder (object)**: 수신 데이터를 WorkManager 작업으로 큐잉 (enqueueSms / enqueueMms)
+- **Forwarder (object)**: SMS 는 `forwardSms` 로 수신 즉시 직접 POST 1회(goAsync, 최대 ~8초) →
+  일시 실패분만 WorkManager 로 큐잉. MMS/HEARTBEAT 는 바로 큐잉 (enqueueSms / enqueueMms / enqueueHeartbeat)
+- **Api (object)**: OkHttp POST + 응답 판정(성공/영구 실패/일시 실패) + payload 공통 필드. 직접 전송과 워커가 공용
 - **ForwardWorker (CoroutineWorker)**: 데이터 추출 → REST API POST.
   MMS 는 content provider 폴링, 실패 시 `Result.retry()` 로 재시도
 - **LogStore (object)**: 송신 이력 저장 (SharedPreferences, "시간 + 제목 10글자", 최신순 최대 300건)
@@ -67,7 +69,8 @@ SMS/MMS 수신 (안드로이드 시스템)
     ↓
 SMSReceiver / MmsReceiver 트리거 (onReceive)
     ↓
-Forwarder.enqueueSms / enqueueMms  (WorkManager 큐잉)
+SMS: Forwarder.forwardSms → 직접 POST (path=direct) → 성공/4xx 면 끝, 일시 실패면 ↓
+MMS: Forwarder.enqueueMms  (WorkManager 큐잉)
     ↓
 ForwardWorker.doWork():
   - SMS: intent 데이터로 즉시 payload 구성
@@ -99,6 +102,10 @@ dependencies {
 
 ## API 명세 (서버가 받을 데이터)
 
+- 모든 전송에 지연 분석/중복 제거용 필드 포함:
+  `msg_id`(메시지 고유값, 직접 전송→워커 재전송 시 동일 → **서버는 msg_id 로 중복 제거**),
+  `received_at`(폰 수신 시각 ms, `timestamp` 는 SMS 의 경우 통신사 SMSC 접수 시각),
+  `sent_at`(이번 전송 시각), `attempt`(시도 횟수, 1부터), `path`(`direct` | `worker`)
 - 모든 전송(SMS/MMS/HEARTBEAT)에 `device_id`(ANDROID_ID, `Utils.getDeviceId`) 포함.
   한 기기의 여러 번호를 같은 기기로 묶는 용도. 공장 초기화·APK 서명 키 변경 시 값이 바뀐다.
 
@@ -110,7 +117,9 @@ dependencies {
   "receiver": "01099999999",
   "device_id": "a1b2c3d4e5f60789",
   "body": "Hello World",
-  "timestamp": 1695123456789
+  "timestamp": 1695123456789,
+  "msg_id": "3f1c2a9e-...", "received_at": 1695123457012, "sent_at": 1695123457230,
+  "attempt": 1, "path": "direct"
 }
 ```
 
@@ -128,7 +137,9 @@ dependencies {
       "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAA..." // Base64 인코딩
     }
   ],
-  "timestamp": 1695123456789
+  "timestamp": 1695123456789,
+  "msg_id": "7b0d4e12-...", "received_at": 1695123456789, "sent_at": 1695123466120,
+  "attempt": 1, "path": "worker"
 }
 ```
 
@@ -262,7 +273,8 @@ app/
 │   │   ├── LogActivity.kt               (송신 이력 화면)
 │   │   ├── SMSReceiver.kt               (BroadcastReceiver - SMS 수신 감지, open class)
 │   │   ├── MmsReceiver.kt               (SMSReceiver 상속 - MMS/WAP_PUSH 감지)
-│   │   ├── Forwarder.kt                 (WorkManager 큐잉 - enqueueSms/enqueueMms)
+│   │   ├── Forwarder.kt                 (SMS 직접 전송 forwardSms + WorkManager 큐잉)
+│   │   ├── Api.kt                       (OkHttp POST + 응답 판정 + payload 공통 필드)
 │   │   ├── ForwardWorker.kt             (CoroutineWorker - 파싱 + API POST + 재시도)
 │   │   ├── LogStore.kt                  (송신 이력 저장 - SharedPreferences)
 │   │   └── Utils.kt                     (API URL 저장/조회, 전화번호 추출)
@@ -292,7 +304,7 @@ scripts/
   - `versionCode` 를 **1 증가** (설치 시 업데이트로 인식되도록)
 - 같은 변경에 대해 빌드 오류를 고치며 다시 빌드하는 경우는 한 번만 올린다
 - 문서(CLAUDE.md 등)/스크립트만 수정해 앱 빌드가 필요 없는 경우는 올리지 않는다
-- 현재: versionName 1.9 / versionCode 10
+- 현재: versionName 2.0 / versionCode 11
 
 ### BroadcastReceiver 수정
 - SMSReceiver.kt / MmsReceiver.kt 를 수정하면 반드시 `installDebug`로 다시 설치한다
