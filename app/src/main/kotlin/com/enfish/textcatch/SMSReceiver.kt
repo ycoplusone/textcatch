@@ -10,7 +10,8 @@ import android.util.Log
 
 /**
  * SMS/MMS 수신을 즉시 감지하는 BroadcastReceiver.
- * 수신 데이터를 파싱해 SMSForwardService 로 넘겨 REST API 전송을 맡긴다.
+ * SMS 는 수신 즉시 직접 전송(Forwarder.forwardSms)을 시도하고 실패분만 WorkManager 로,
+ * MMS 는 콘텐츠 다운로드 대기가 필요해 WorkManager(ForwardWorker)로 바로 넘긴다.
  */
 open class SMSReceiver : BroadcastReceiver() {
 
@@ -29,6 +30,7 @@ open class SMSReceiver : BroadcastReceiver() {
 
     /** SMS 파싱: 발신자 + 본문(멀티파트 결합) */
     private fun handleSms(context: Context, intent: Intent) {
+        val receivedAt = System.currentTimeMillis()  // 폰 수신 시각 (지연 측정 기준)
         val messages: Array<SmsMessage> = Telephony.Sms.Intents.getMessagesFromIntent(intent)
             ?: return
         if (messages.isEmpty()) return
@@ -47,7 +49,21 @@ open class SMSReceiver : BroadcastReceiver() {
         val receiver = Utils.getDevicePhoneNumber(context, subId)
         Log.d(TAG, "SMS 수신 sender=$sender bodyLen=${body.length} subId=$subId receiver=$receiver")
 
-        Forwarder.enqueueSms(context, sender, receiver, body.toString(), timestamp)
+        // 네트워크 호출이라 메인 스레드 불가 → goAsync 로 브로드캐스트를 연장해 백그라운드 스레드에서 전송.
+        // (forwardSms 는 최대 ~8초, 실패 시 WorkManager 큐잉까지 마친 뒤 finish)
+        val pending = goAsync()
+        val appContext = context.applicationContext
+        val text = body.toString()
+        Thread {
+            try {
+                Forwarder.forwardSms(appContext, sender, receiver, text, timestamp, receivedAt)
+            } catch (e: Exception) {
+                Log.e(TAG, "직접 전송 처리 실패 → WorkManager 로 큐잉", e)
+                Forwarder.enqueueSms(appContext, sender, receiver, text, timestamp, receivedAt)
+            } finally {
+                pending.finish()
+            }
+        }.start()
     }
 
     /**
