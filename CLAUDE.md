@@ -170,10 +170,8 @@ scripts\install.bat                     # 기기 1대 연결 시
 scripts\install.bat -Serial <시리얼>     # 여러 대 연결 시 (adb devices 로 확인)
 scripts\install.bat -Apk D:\경로\app-debug.apk   # 다른 APK 지정
 ```
-- `scripts\setup.bat [APK경로]` : PowerShell 없이 cmd 만으로 설치 + appops 해제 + pm grant 6개 +
-  배터리/백그라운드(deviceidle 화이트리스트, RUN_ANY_IN_BACKGROUND, standby-bucket active) 설정 후
-  설치 여부와 기기의 versionName/versionCode/lastUpdateTime 출력. APK 기본값은 같은 폴더 `app-debug.apk`.
-  시작 시 `adb disconnect` 로 무선 adb 연결을 끊으므로 USB 연결 기준. CRLF + UTF-8(chcp 65001) 유지
+- `scripts\setup.bat` : PowerShell 없이 cmd 만으로 같은 폴더의 `app-debug.apk` 설치 →
+  설치 확인(versionName/versionCode/lastUpdateTime) → 권한 설정(appops 제한 해제 + pm grant 6개). CRLF + UTF-8(chcp 65001) 유지
 - `install.bat` 은 실행 정책 우회(`-ExecutionPolicy Bypass`)로 같은 폴더의 `install.ps1` 을 실행하는 래퍼
 - 수행 순서: 기기 확인 → `adb install -r` → 제한된 설정 해제(appops) → `pm grant` 7개 → 권한 상태 출력 → 앱 실행
 - 샤오미에서 `INSTALL_FAILED_USER_RESTRICTED` 면 APK 를 `/sdcard/Download/textcatch.apk` 로 복사하고,
