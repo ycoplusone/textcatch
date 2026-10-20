@@ -5,6 +5,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -23,6 +25,19 @@ import java.util.Locale
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
+
+    private val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault())
+    private var forwardInfos: List<WorkInfo> = emptyList()
+    private var retryRunning = false
+
+    /** 지연 대기열(파일)은 LiveData 가 없으므로 화면이 보이는 동안 1초마다 갱신. */
+    private val ticker = Handler(Looper.getMainLooper())
+    private val tick = object : Runnable {
+        override fun run() {
+            renderQueue()
+            ticker.postDelayed(this, 1000L)
+        }
+    }
 
     private val requestPermissions =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -58,6 +73,12 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnTest.setOnClickListener { sendTestPayload() }
 
+        binding.btnFlush.setOnClickListener {
+            val n = RetryQueue.flushNow(applicationContext)
+            toast(if (n > 0) "지연 메시지 ${n}건 즉시 발송 시작" else "대기 중인 지연 메시지가 없습니다")
+            renderQueue()
+        }
+
         binding.btnLogs.setOnClickListener {
             startActivity(Intent(this, LogActivity::class.java))
         }
@@ -72,6 +93,13 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshStatus()
+        RetryQueue.ensureScheduled(applicationContext)
+        ticker.post(tick)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        ticker.removeCallbacks(tick)
     }
 
     private fun requiredPermissions(): Array<String> {
@@ -121,32 +149,51 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * 전송 대기열 실시간 표시. WorkManager 는 워커 클래스 이름을 태그로 자동 부여하므로
-     * 이 기능 이전에 쌓인 작업도 함께 조회된다.
+     * 이 기능 이전에 쌓인 작업도 함께 조회된다. 지연 대기열(RetryQueue)은 별도 줄로 표시.
      */
     private fun observeQueue() {
-        val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault())
-        WorkManager.getInstance(applicationContext)
-            .getWorkInfosByTagLiveData(ForwardWorker::class.java.name)
-            .observe(this) { infos ->
-                val enqueued = infos.filter { it.state == WorkInfo.State.ENQUEUED }
-                val waiting = enqueued.count { it.runAttemptCount == 0 }  // 첫 실행 전(네트워크 대기 등)
-                val retrying = enqueued.filter { it.runAttemptCount > 0 } // 실패 후 백오프 중
-                val running = infos.count { it.state == WorkInfo.State.RUNNING }
-                val blocked = infos.count { it.state == WorkInfo.State.BLOCKED } // MMS 체인 순서 대기
-                binding.textQueue.text = buildString {
-                    append("전송 대기열: ${waiting + retrying.size + running + blocked}건\n")
-                    append("발송 대기 $waiting · 재시도 대기 ${retrying.size} · 전송 중 $running · 순서 대기 $blocked")
-                    retrying.minOfOrNull { it.nextScheduleTimeMillis }?.let { next ->
-                        val maxTry = retrying.maxOf { it.runAttemptCount }
-                        append("\n다음 재시도: ${fmt.format(Date(next))} (최다 ${maxTry}회 실패)")
-                    }
+        val wm = WorkManager.getInstance(applicationContext)
+        wm.getWorkInfosByTagLiveData(ForwardWorker::class.java.name).observe(this) { infos ->
+            forwardInfos = infos
+            renderQueue()
+        }
+        wm.getWorkInfosForUniqueWorkLiveData(RetryQueue.WORK_NAME).observe(this) { infos ->
+            retryRunning = infos.any { it.state == WorkInfo.State.RUNNING }
+            renderQueue()
+        }
+    }
+
+    private fun renderQueue() {
+        val infos = forwardInfos
+        val enqueued = infos.filter { it.state == WorkInfo.State.ENQUEUED }
+        val waiting = enqueued.count { it.runAttemptCount == 0 }  // 첫 실행 전(네트워크 대기 등)
+        val retrying = enqueued.filter { it.runAttemptCount > 0 } // MMS 콘텐츠 대기 등 백오프 중
+        val running = infos.count { it.state == WorkInfo.State.RUNNING }
+        val blocked = infos.count { it.state == WorkInfo.State.BLOCKED } // MMS 체인 순서 대기
+        val delayed = RetryQueue.size(applicationContext)
+        binding.textQueue.text = buildString {
+            append("전송 대기열: ${waiting + retrying.size + running + blocked + delayed}건\n")
+            append("발송 대기 $waiting · 재시도 대기 ${retrying.size} · 전송 중 $running · 순서 대기 $blocked\n")
+            append("지연 메시지 ${delayed}건")
+            if (delayed > 0) {
+                val next = RetryQueue.nextAt(applicationContext)
+                val left = (next - System.currentTimeMillis()) / 1000L
+                when {
+                    retryRunning && left <= 0 -> append(" · 일괄 재발송 중")
+                    next > 0 && left > 0 -> append(" · 다음 일괄 재발송 ${fmt.format(Date(next))} (${left}초 후)")
+                    else -> append(" · 네트워크 대기 중")
                 }
             }
+            retrying.minOfOrNull { it.nextScheduleTimeMillis }?.let { next ->
+                val maxTry = retrying.maxOf { it.runAttemptCount }
+                append("\n다음 재시도: ${fmt.format(Date(next))} (최다 ${maxTry}회 실패)")
+            }
+        }
     }
 
     /** 실제 수신 없이 전송 경로를 점검하는 테스트 버튼. */
     private fun sendTestPayload() {
-        // 실제 SMS 수신과 같은 경로: 직접 전송 → 실패 시 WorkManager
+        // 실제 SMS 수신과 같은 경로: 직접 전송 → 실패 시 지연 대기열
         val ctx = applicationContext
         val receiver = Utils.getDevicePhoneNumber(this)
         Thread {

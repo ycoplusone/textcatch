@@ -42,8 +42,9 @@ object Forwarder {
         val request = OneTimeWorkRequestBuilder<ForwardWorker>()
             .setInputData(data)
             .setConstraints(constraints)
-            // ② 재시도: 실패 시 10초부터 지수 백오프
-            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
+            // MMS 콘텐츠 미도착 재시도: 20초 선형 백오프 (20, 40, … 600초)
+            // 전송 실패 재시도는 RetryQueue 가 담당 (1→2→4…최대 600초 일괄 재발송)
+            .setBackoffCriteria(BackoffPolicy.LINEAR, 20, TimeUnit.SECONDS)
             // 가능하면 즉시 실행(quota 초과 시 일반 작업으로)
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .build()
@@ -71,17 +72,21 @@ object Forwarder {
         receivedAt: Long = System.currentTimeMillis()
     ) {
         val msgId = UUID.randomUUID().toString()
+        var payload: org.json.JSONObject? = null
         val outcome = try {
-            val payload = Api.buildPayload(
+            payload = Api.buildPayload(
                 context, "SMS", sender, receiver, body, timestamp,
                 msgId, receivedAt, attempt = 1, path = "direct"
             )
             Api.post(context, payload, fast = true).also {
                 when (it) {
-                    is Api.PostOutcome.Success -> LogStore.add(
-                        context, body, delayMs = payload.getLong("sent_at") - receivedAt,
-                        attempt = 1, via = LogStore.VIA_DIRECT
-                    )
+                    is Api.PostOutcome.Success -> {
+                        LogStore.add(
+                            context, body, delayMs = payload.getLong("sent_at") - receivedAt,
+                            attempt = 1, via = LogStore.VIA_DIRECT
+                        )
+                        RetryQueue.onServerReachable(context)
+                    }
                     is Api.PostOutcome.Permanent -> LogStore.add(
                         context, body, failReason = it.reason,
                         delayMs = payload.getLong("sent_at") - receivedAt,
@@ -95,8 +100,15 @@ object Forwarder {
             Api.PostOutcome.Retryable("예외")
         }
         if (outcome is Api.PostOutcome.Retryable) {
-            Log.d(TAG, "직접 전송 실패(${outcome.reason}) → WorkManager 재시도로 넘김 msg_id=$msgId")
-            enqueueSms(context, sender, receiver, body, timestamp, receivedAt, msgId)
+            val p = payload
+            if (p != null) {
+                // 일시 실패 → 지연 대기열 (RetryWorker 가 다른 대기 건과 함께 일괄 재발송)
+                Log.d(TAG, "직접 전송 실패(${outcome.reason}) → 지연 대기열로 넘김 msg_id=$msgId")
+                RetryQueue.add(context, p)
+            } else {
+                Log.d(TAG, "직접 전송 실패(${outcome.reason}) → WorkManager 로 넘김 msg_id=$msgId")
+                enqueueSms(context, sender, receiver, body, timestamp, receivedAt, msgId)
+            }
         }
     }
 

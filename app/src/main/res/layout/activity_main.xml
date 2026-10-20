@@ -28,12 +28,19 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:layout_marginBottom="16dp"
+            android:layout_marginBottom="8dp"
             android:padding="10dp"
             android:background="#14000000"
             android:textSize="14sp"
             android:fontFamily="monospace"
             android:text="전송 대기열: 확인 중..." />
+
+        <Button
+            android:id="@+id/btnFlush"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:text="지연메세지발송" />
 
         <TextView
             android:layout_width="wrap_content"
