@@ -26,8 +26,9 @@ import java.io.ByteArrayOutputStream
  *   content provider 를 짧게 폴링해서 준비될 때까지 기다린 뒤 전송한다.
  *   그래도 안 오면 Result.retry() 로 WorkManager 가 나중에 다시 시도한다.
  * - 전송/응답 판정은 Api.post 공통 사용 (SMS 직접 전송 실패분도 여기로 넘어온다).
- * - ② 일시적 실패(네트워크 예외, 408/429/5xx)는 Result.retry() → 지수 백오프 재시도.
- * - ③ 영구 실패(그 외 4xx 등)나 재시도 한도(MAX_RUN_ATTEMPTS) 초과는 포기하고
+ * - ② 일시적 실패(네트워크 예외, 408/429/5xx)는 RetryQueue(지연 대기열)로 넘겨
+ *   RetryWorker 가 대기 중인 건과 함께 일괄 재발송한다 (간격 1→2→4…최대 600초).
+ * - ③ 영구 실패(그 외 4xx 등)나 MMS 콘텐츠 대기 한도(MAX_RUN_ATTEMPTS) 초과는 포기하고
  *   실패 이력을 남긴다. MMS 체인이 막히지 않도록 Result.failure() 가 아닌
  *   Result.success() 로 끝낸다 (체인 중간 failure 는 뒤에 붙은 작업까지 실패시킴).
  */
@@ -49,8 +50,9 @@ class ForwardWorker(
         private const val KEY_SENT_WORK_IDS = "sent_work_ids"
         private const val SENT_WORK_IDS_MAX = 100
 
-        // 재시도 한도: 실행 15회 (10초 지수 백오프, 최대 5시간 간격 → 약 하루)
-        private const val MAX_RUN_ATTEMPTS = 15
+        // MMS 콘텐츠 미도착 재시도 한도: 30회 (20초 선형 백오프 → 간격 최대 600초, 약 2.6시간)
+        // (전송 실패는 여기서 재시도하지 않고 RetryQueue 로 넘긴다)
+        private const val MAX_RUN_ATTEMPTS = 30
 
         // Android 11 이하 expedited 작업용 포그라운드 알림
         private const val FG_CHANNEL_ID = "forward"
@@ -135,15 +137,17 @@ class ForwardWorker(
                     delayMs = payload.getLong("sent_at") - receivedAt,
                     attempt = attempt, via = LogStore.VIA_WORKER
                 )
+                RetryQueue.onServerReachable(applicationContext)
                 Result.success()
             }
             is Api.PostOutcome.Permanent -> giveUp(payload, outcome.reason)
             is Api.PostOutcome.Retryable -> {
-                if (isLastAttempt()) giveUp(payload, "${outcome.reason} 한도초과")
-                else {
-                    Log.d(TAG, "재시도 예정 (${outcome.reason}) attempt=$attempt/$MAX_RUN_ATTEMPTS")
-                    Result.retry()
-                }
+                // 일시 실패: 지연 대기열로 넘겨 일괄 재발송 (1→2→4…최대 600초 간격).
+                // 대기열에 넣은 뒤 완료 표시 → 이 작업이 재실행돼도 중복 큐잉 안 됨, MMS 체인도 진행
+                RetryQueue.add(applicationContext, payload)
+                markSent()
+                Log.d(TAG, "일시 실패 (${outcome.reason}) → 지연 대기열로 이동 attempt=$attempt")
+                Result.success()
             }
         }
     }

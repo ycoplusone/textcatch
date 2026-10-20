@@ -50,10 +50,14 @@ SMS/MMS를 수신하면 **즉시 캐치**하고 REST API URL로 실시간 전송
 - **MmsReceiver (SMSReceiver 상속)**: MMS(WAP_PUSH_RECEIVED) 감지.
   같은 클래스를 매니페스트에 중복 선언할 수 없어 별도 클래스로 등록 (권한이 서로 다름)
 - **Forwarder (object)**: SMS 는 `forwardSms` 로 수신 즉시 직접 POST 1회(goAsync, 최대 ~8초) →
-  일시 실패분만 WorkManager 로 큐잉. MMS/HEARTBEAT 는 바로 큐잉 (enqueueSms / enqueueMms / enqueueHeartbeat)
+  일시 실패분은 RetryQueue(지연 대기열)로. MMS/HEARTBEAT 는 바로 큐잉 (enqueueSms / enqueueMms / enqueueHeartbeat)
+- **RetryQueue (object)**: 일시 실패 payload 를 파일(filesDir/retry_queue)로 보관. 재발송 간격 1→2→4→…최대 600초
+  (대기열 공통 단계, 비면 초기화). `flushNow` = "지연메세지발송" 버튼(즉시 일괄 발송)
+- **RetryWorker (CoroutineWorker)**: 대기 중인 모든 건을 오래된 순으로 일괄 재발송. 16초 이하 간격은 워커 내부 대기,
+  그 이상은 지연 작업 예약. 네트워크 예외 시 라운드 중단. 수신 후 24시간 초과 시 포기
 - **Api (object)**: OkHttp POST + 응답 판정(성공/영구 실패/일시 실패) + payload 공통 필드. 직접 전송과 워커가 공용
 - **ForwardWorker (CoroutineWorker)**: 데이터 추출 → REST API POST.
-  MMS 는 content provider 폴링, 실패 시 `Result.retry()` 로 재시도
+  MMS 는 content provider 폴링, 콘텐츠 미도착 시 `Result.retry()` (20초 선형 백오프, 최대 30회)
 - **LogStore (object)**: 송신 이력 저장 (SharedPreferences, "시간 + 제목 10글자", 최신순 최대 300건)
 - **LogActivity**: 송신 이력 화면 (새로고침 / 지우기)
 - **MainActivity**: 설정 UI & 테스트 (API URL 설정, 권한 요청, 테스트 전송, 로그 보기,
@@ -82,8 +86,10 @@ ForwardWorker.doWork():
 REST API 호출 (POST) — OkHttp
     ↓
 성공: LogStore 에 이력 저장 → Result.success()
-일시 실패(네트워크 예외 / 408 / 429 / 5xx): Result.retry() (10s 지수 백오프, 최대 5h 간격)
-영구 실패(그 외 4xx) 또는 재시도 한도(MAX_RUN_ATTEMPTS=15회, 약 하루) 초과:
+일시 실패(네트워크 예외 / 408 / 429 / 5xx): RetryQueue 로 이동 → RetryWorker 가 대기 건 전부를
+  1→2→4→…→600초(상한) 간격으로 일괄 재발송. 메인 화면 "지연메세지발송" 버튼으로 즉시 일괄 발송
+  새 메시지 전송이 성공하면(서버 복구) 대기 중인 지연 메시지도 즉시 일괄 발송 (RetryQueue.onServerReachable)
+영구 실패(그 외 4xx) 또는 한도(수신 후 24시간 / MMS 콘텐츠 대기 30회) 초과:
   전송 포기 → LogStore 에 "[실패 코드] 제목" 기록 → MMS 는 last_mms_id 넘김
   → Result.success() 로 종료 (MMS 체인이 막히지 않도록 failure 를 쓰지 않음)
 ```
@@ -304,7 +310,7 @@ scripts/
   - `versionCode` 를 **1 증가** (설치 시 업데이트로 인식되도록)
 - 같은 변경에 대해 빌드 오류를 고치며 다시 빌드하는 경우는 한 번만 올린다
 - 문서(CLAUDE.md 등)/스크립트만 수정해 앱 빌드가 필요 없는 경우는 올리지 않는다
-- 현재: versionName 2.0 / versionCode 11
+- 현재: versionName 2.2 / versionCode 13
 
 ### BroadcastReceiver 수정
 - SMSReceiver.kt / MmsReceiver.kt 를 수정하면 반드시 `installDebug`로 다시 설치한다
