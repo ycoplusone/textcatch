@@ -76,7 +76,21 @@ open class SMSReceiver : BroadcastReceiver() {
         val subId = Utils.subIdFromIntent(intent)
         Log.d(TAG, "MMS(WAP_PUSH) 수신 감지 subId=$subId")
         val receiver = Utils.getDevicePhoneNumber(context, subId)
-        Forwarder.enqueueMms(context, receiver, System.currentTimeMillis())
+        val receivedAt = System.currentTimeMillis()
+        // 앞 작업이 긴 백오프로 멈춰 있으면 이 MMS 도 그 뒤에서 밀리므로 먼저 체인을 정리한 뒤 큐잉
+        // (WorkManager DB 조회를 기다려야 해서 goAsync 백그라운드 스레드에서 처리)
+        val pending = goAsync()
+        val appContext = context.applicationContext
+        Thread {
+            try {
+                Forwarder.kickMms(appContext, onlyIfStalled = true)
+            } catch (e: Exception) {
+                Log.e(TAG, "MMS 체인 점검 실패 (큐잉은 계속)", e)
+            } finally {
+                Forwarder.enqueueMms(appContext, receiver, receivedAt)
+                pending.finish()
+            }
+        }.start()
 
         val extras: Bundle? = intent.extras
         val pdu = extras?.getByteArray("data")

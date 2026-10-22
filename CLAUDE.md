@@ -57,7 +57,10 @@ SMS/MMS를 수신하면 **즉시 캐치**하고 REST API URL로 실시간 전송
   그 이상은 지연 작업 예약. 네트워크 예외 시 라운드 중단. 수신 후 24시간 초과 시 포기
 - **Api (object)**: OkHttp POST + 응답 판정(성공/영구 실패/일시 실패) + payload 공통 필드. 직접 전송과 워커가 공용
 - **ForwardWorker (CoroutineWorker)**: 데이터 추출 → REST API POST.
-  MMS 는 content provider 폴링, 콘텐츠 미도착 시 `Result.retry()` (20초 선형 백오프, 최대 30회)
+  MMS 는 content provider 폴링, 콘텐츠 미도착 시 `Result.retry()` (20초 선형 백오프, 최대 30회).
+  MMS 체인은 직렬이므로 콘텐츠 대기는 수신 후 10분(다운로드 중 m_type=130 이 있으면 60분)까지만 하고 종료.
+  `Forwarder.kickMms` = 다음 실행이 15분 넘게 밀린 체인을 취소하고 정리 작업(sweep, 24시간 내 미전송 MMS 를
+  한 건씩 이어서 전송)으로 대체 — MMS 수신 시/앱 화면 진입 시 자동, "지연메세지발송" 버튼은 무조건 실행
 - **LogStore (object)**: 송신 이력 저장 (SharedPreferences, "시간 + 제목 10글자", 최신순 최대 300건)
 - **LogActivity**: 송신 이력 화면 (새로고침 / 지우기)
 - **MainActivity**: 설정 UI & 테스트 (API URL 설정, 권한 요청, 테스트 전송, 로그 보기,
@@ -308,7 +311,7 @@ scripts/
   - `versionCode` 를 **1 증가** (설치 시 업데이트로 인식되도록)
 - 같은 변경에 대해 빌드 오류를 고치며 다시 빌드하는 경우는 한 번만 올린다
 - 문서(CLAUDE.md 등)/스크립트만 수정해 앱 빌드가 필요 없는 경우는 올리지 않는다
-- 현재: versionName 2.2 / versionCode 13
+- 현재: versionName 2.3 / versionCode 14
 
 ### BroadcastReceiver 수정
 - SMSReceiver.kt / MmsReceiver.kt 를 수정하면 반드시 `installDebug`로 다시 설치한다
