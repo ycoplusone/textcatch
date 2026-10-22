@@ -9,6 +9,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -27,11 +28,16 @@ object Forwarder {
     const val KEY_TIMESTAMP = "timestamp"
     const val KEY_RECEIVED_AT = "received_at"
     const val KEY_MSG_ID = "msg_id"
+    /** MMS 정리 작업: 특정 WAP Push 가 아니라 밀린 미전송 MMS 를 찾아 보낸다 (kickMms). */
+    const val KEY_SWEEP = "sweep"
 
     private const val TAG = "Forwarder"
 
     /** MMS 작업은 같은 content provider 를 보므로 직렬 실행(동시 실행 시 같은 건 중복 전송 방지). */
     private const val MMS_CHAIN = "mms_forward"
+
+    /** 체인 작업의 다음 실행이 이보다 더 뒤면 멈춘 것으로 본다 (현재 백오프 간격 상한 600초 + 여유). */
+    private const val MMS_STALL_MS = 15 * 60 * 1000L
 
     private fun enqueue(context: Context, data: Data, uniqueChain: String? = null) {
         // 네트워크가 있을 때 실행 (없으면 연결될 때까지 대기 → 유실 방지)
@@ -168,5 +174,44 @@ object Forwarder {
                 .build(),
             uniqueChain = MMS_CHAIN
         )
+    }
+
+    /** 밀린 미전송 MMS 를 (최대 24시간 전까지) 한 건씩 찾아 보내는 정리 작업을 MMS 체인에 붙인다. */
+    fun enqueueMmsSweep(context: Context, receiver: String) {
+        val now = System.currentTimeMillis()
+        enqueue(
+            context,
+            Data.Builder()
+                .putString(KEY_TYPE, "MMS")
+                .putString(KEY_RECEIVER, receiver)
+                .putLong(KEY_TIMESTAMP, now)
+                .putLong(KEY_RECEIVED_AT, now)
+                .putString(KEY_MSG_ID, UUID.randomUUID().toString())
+                .putBoolean(KEY_SWEEP, true)
+                .build(),
+            uniqueChain = MMS_CHAIN
+        )
+    }
+
+    /**
+     * 백오프로 멈춘 MMS 체인 정리. 체인은 직렬이라 맨 앞 작업이 재시도 대기(구버전 작업은 최대 5시간)에
+     * 걸리면 뒤의 MMS 가 전부 밀린다 → 실행 중인 작업이 없으면 체인을 비우고 정리 작업으로 즉시 다시 찾는다.
+     * - onlyIfStalled: 앱 실행 시 자동 점검용. 다음 실행이 MMS_STALL_MS 이상 뒤로 밀린 작업이 있을 때만 정리.
+     * WorkManager DB 조회를 기다리므로 메인 스레드가 아닌 곳에서 호출. 반환값 = 정리한 대기 작업 수.
+     */
+    fun kickMms(context: Context, onlyIfStalled: Boolean = false): Int {
+        val wm = WorkManager.getInstance(context.applicationContext)
+        val infos = wm.getWorkInfosForUniqueWork(MMS_CHAIN).get()
+        if (infos.any { it.state == WorkInfo.State.RUNNING }) return 0
+        val stuck = infos.count { !it.state.isFinished }
+        if (stuck == 0) return 0
+        if (onlyIfStalled) {
+            val limit = System.currentTimeMillis() + MMS_STALL_MS
+            if (infos.none { it.state == WorkInfo.State.ENQUEUED && it.nextScheduleTimeMillis > limit }) return 0
+        }
+        Log.d(TAG, "MMS 체인 정리: 대기 작업 ${stuck}건 취소 → 정리 작업으로 재탐색")
+        wm.cancelUniqueWork(MMS_CHAIN).result.get()
+        enqueueMmsSweep(context, Utils.getDevicePhoneNumber(context))
+        return stuck
     }
 }

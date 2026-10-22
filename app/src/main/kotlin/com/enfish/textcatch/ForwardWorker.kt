@@ -54,6 +54,12 @@ class ForwardWorker(
         // (전송 실패는 여기서 재시도하지 않고 RetryQueue 로 넘긴다)
         private const val MAX_RUN_ATTEMPTS = 30
 
+        // 콘텐츠 미도착 대기 시간 상한 (수신 시각 기준). 체인은 직렬이라 한 작업이 오래 기다리면
+        // 뒤의 MMS 가 모두 밀리므로, 다운로드 중(m_type=130)인 건이 없으면 짧게만 기다린다.
+        // (이 WAP Push 의 MMS 를 앞 작업이 이미 보낸 경우 / 저장되지 않는 WAP Push 인 경우)
+        private const val MMS_WAIT_NO_PENDING_MS = 10 * 60 * 1000L
+        private const val MMS_WAIT_PENDING_MS = 60 * 60 * 1000L
+
         // Android 11 이하 expedited 작업용 포그라운드 알림
         private const val FG_CHANNEL_ID = "forward"
         private const val FG_NOTIFICATION_ID = 1001
@@ -61,6 +67,8 @@ class ForwardWorker(
 
     /** 이번에 전송한 MMS id (성공 시 중복 방지용으로 저장). */
     private var pendingMmsId: Long? = null
+    /** 이번에 전송한 MMS 의 수신 시각(ms). 정리 작업(sweep)의 received_at 으로 사용. */
+    private var pendingMmsDate: Long = 0L
 
     /**
      * Android 11(API 30) 이하에서 setExpedited 작업은 포그라운드 서비스로 실행되며,
@@ -96,16 +104,25 @@ class ForwardWorker(
         val receiver = inputData.getString(Forwarder.KEY_RECEIVER) ?: ""
         val timestamp = inputData.getLong(Forwarder.KEY_TIMESTAMP, System.currentTimeMillis())
         // 이 기능 이전에 쌓인 작업은 값이 없으므로 timestamp / 작업 id 로 대체
-        val receivedAt = inputData.getLong(Forwarder.KEY_RECEIVED_AT, timestamp)
+        var receivedAt = inputData.getLong(Forwarder.KEY_RECEIVED_AT, timestamp)
         val msgId = inputData.getString(Forwarder.KEY_MSG_ID) ?: id.toString()
         val attempt = runAttemptCount + 1
+        val sweep = inputData.getBoolean(Forwarder.KEY_SWEEP, false)
 
         val payload: JSONObject = if (type == "MMS") {
-            buildMmsPayload(receiver, timestamp)
+            buildMmsPayload(receiver, timestamp, sweep)
                 ?: run {
+                    // 정리 작업: 남은 미전송 MMS 가 없으면 끝
+                    if (sweep) {
+                        Log.d(TAG, "MMS 정리: 미전송 MMS 없음 → 종료")
+                        return@withContext Result.success()
+                    }
                     // 아직 MMS 콘텐츠가 안 옴 → 나중에 다시 시도 (한도 초과 시 포기: 체인 해제)
-                    if (isLastAttempt()) {
-                        Log.w(TAG, "MMS 콘텐츠 미도착, 재시도 한도 초과 → 포기")
+                    val waited = System.currentTimeMillis() - receivedAt
+                    val limit = if (hasPendingMmsDownload(getLastMmsId())) MMS_WAIT_PENDING_MS
+                    else MMS_WAIT_NO_PENDING_MS
+                    if (isLastAttempt() || waited > limit) {
+                        Log.w(TAG, "MMS 콘텐츠 미도착 ${waited / 1000}초 경과(한도 ${limit / 1000}초) → 종료")
                         return@withContext Result.success()
                     }
                     Log.d(TAG, "MMS 콘텐츠 미도착 → 재시도 예약")
@@ -126,8 +143,21 @@ class ForwardWorker(
                 path = "worker"
             )
         }
-        if (type == "MMS") Api.stamp(payload, applicationContext, msgId, receivedAt, attempt, "worker")
+        if (type == "MMS") {
+            // 정리 작업은 작업 생성 시각이 아니라 MMS 실제 수신 시각으로 지연을 잰다
+            if (sweep && pendingMmsDate > 0L) receivedAt = pendingMmsDate
+            Api.stamp(payload, applicationContext, msgId, receivedAt, attempt, "worker")
+        }
 
+        val result = send(payload, receivedAt, attempt)
+        // 정리 작업: 한 번에 한 건씩 보내므로 남은 미전송 MMS 가 있으면 다음 정리 작업을 이어 붙인다
+        if (sweep && queryUnsentMmsIds(getLastMmsId()).isNotEmpty()) {
+            Forwarder.enqueueMmsSweep(applicationContext, receiver)
+        }
+        result
+    }
+
+    private fun send(payload: JSONObject, receivedAt: Long, attempt: Int): Result =
         when (val outcome = Api.post(applicationContext, payload)) {
             is Api.PostOutcome.Success -> {
                 // 성공: 재실행 중복 방지 표시를 먼저 즉시 저장(commit) → 이력 저장
@@ -150,7 +180,6 @@ class ForwardWorker(
                 Result.success()
             }
         }
-    }
 
     /**
      * 전송 포기: MMS 는 last_mms_id 를 넘겨 다음 MMS 가 막히지 않게 하고,
@@ -176,13 +205,17 @@ class ForwardWorker(
      * content provider 를 폴링해 최신 MMS(본문/이미지)를 읽는다.
      * 준비되면 payload 반환, 아직이면 null(→ 재시도).
      */
-    private suspend fun buildMmsPayload(receiver: String, timestamp: Long): JSONObject? {
+    private suspend fun buildMmsPayload(receiver: String, timestamp: Long, sweep: Boolean): JSONObject? {
         val lastSent = getLastMmsId()
-        repeat(MMS_POLL_TRIES) { attempt ->
+        // 정리 작업은 멈춰 있던 동안 밀린 MMS 를 보내야 하므로 지연 대기열과 같은 24시간까지 본다
+        // (처음 설치라 lastSent 가 없으면 과거 MMS 를 쏟아내지 않도록 기본 창 유지)
+        val window = if (sweep && lastSent >= 0) RetryQueue.GIVE_UP_AFTER_MS else MMS_RECENT_WINDOW_MS
+        // 정리 작업은 이미 도착한 것만 보내므로 폴링(대기) 없이 1회만 조회
+        repeat(if (sweep) 1 else MMS_POLL_TRIES) { attempt ->
             // 아직 안 보낸 수신 MMS 중 가장 오래된 것부터 (연속 수신 시 누락 방지)
             for (id in queryUnsentMmsIds(lastSent)) {
                 val dateMs = queryMmsDateMillis(id)
-                val recent = dateMs <= 0L || dateMs >= timestamp - MMS_RECENT_WINDOW_MS
+                val recent = dateMs <= 0L || dateMs >= timestamp - window
                 if (!recent) continue
                 val body = StringBuilder()
                 val images = JSONArray()
@@ -191,6 +224,7 @@ class ForwardWorker(
                 if (body.isEmpty()) body.append(queryMmsSubject(id))
                 if (body.isNotEmpty() || images.length() > 0) {
                     pendingMmsId = id
+                    pendingMmsDate = dateMs
                     Log.d(TAG, "MMS 파싱 id=$id bodyLen=${body.length} images=${images.length()}")
                     return JSONObject().apply {
                         put("type", "MMS")
@@ -198,15 +232,23 @@ class ForwardWorker(
                         put("receiver", queryMmsReceiver(id) ?: receiver)
                         put("body", body.toString())
                         put("images", images)
-                        put("timestamp", timestamp)
+                        put("timestamp", if (sweep && dateMs > 0L) dateMs else timestamp)
                     }
                 }
             }
+            if (sweep) return null
             Log.d(TAG, "MMS 대기중... attempt=${attempt + 1}/$MMS_POLL_TRIES")
             delay(MMS_POLL_INTERVAL_MS)
         }
         return null
     }
+
+    /** 다운로드 대기 중인 MMS 알림(m_type=130, 수신함)이 lastSent 이후에 있는지. */
+    private fun hasPendingMmsDownload(lastSent: Long): Boolean =
+        applicationContext.contentResolver.query(
+            Uri.parse("content://mms"), arrayOf("_id"),
+            "_id>? AND msg_box=1 AND m_type=130", arrayOf(lastSent.toString()), null
+        )?.use { it.count > 0 } ?: false
 
     /** 다운로드 완료된(m_type=132) 수신함(msg_box=1) MMS 중 lastSent 이후 id, 오래된 순. */
     private fun queryUnsentMmsIds(lastSent: Long): List<Long> {

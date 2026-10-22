@@ -74,9 +74,23 @@ class MainActivity : AppCompatActivity() {
         binding.btnTest.setOnClickListener { sendTestPayload() }
 
         binding.btnFlush.setOnClickListener {
-            val n = RetryQueue.flushNow(applicationContext)
-            toast(if (n > 0) "지연 메시지 ${n}건 즉시 발송 시작" else "대기 중인 지연 메시지가 없습니다")
-            renderQueue()
+            val ctx = applicationContext
+            val n = RetryQueue.flushNow(ctx)
+            // 지연 대기열(전송 실패분) + 재시도 대기 중인 MMS 체인(콘텐츠 대기분)을 함께 즉시 처리
+            Thread {
+                val m = try {
+                    Forwarder.kickMms(ctx)
+                } catch (e: Exception) {
+                    0
+                }
+                runOnUiThread {
+                    toast(
+                        if (n + m > 0) "지연 메시지 ${n}건 · MMS 대기 ${m}건 즉시 발송 시작"
+                        else "대기 중인 지연 메시지가 없습니다"
+                    )
+                    renderQueue()
+                }
+            }.start()
         }
 
         binding.btnLogs.setOnClickListener {
@@ -94,6 +108,15 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         refreshStatus()
         RetryQueue.ensureScheduled(applicationContext)
+        // MMS 체인이 긴 백오프(구버전 작업 최대 5시간)에 걸려 멈춰 있으면 자동 정리
+        val ctx = applicationContext
+        Thread {
+            try {
+                Forwarder.kickMms(ctx, onlyIfStalled = true)
+            } catch (e: Exception) {
+                // 다음 화면 진입 / 버튼으로 다시 시도
+            }
+        }.start()
         ticker.post(tick)
     }
 
