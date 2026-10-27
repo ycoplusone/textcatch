@@ -73,6 +73,17 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnTest.setOnClickListener { sendTestPayload() }
 
+        // 3시간 주기를 기다리지 않고 heartbeat(대기/보류 현황 status 포함)를 지금 바로 전송
+        binding.btnHeartbeat.setOnClickListener {
+            Forwarder.enqueueHeartbeat(
+                applicationContext,
+                Utils.getDevicePhoneNumber(this),
+                DailyPing.BODY,
+                System.currentTimeMillis()
+            )
+            toast("heartbeat 전송 시작 (로그 보기 / logcat 확인)")
+        }
+
         binding.btnFlush.setOnClickListener {
             val ctx = applicationContext
             val n = RetryQueue.flushNow(ctx)
@@ -109,7 +120,7 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, LogActivity::class.java))
         }
 
-        // 6시간마다 정기 상태 확인(heartbeat) API 호출 예약 (01/07/13/19시대, 기기 번호 끝자리 분)
+        // 3시간마다 정기 상태 확인(heartbeat) API 호출 예약 (01시부터 3시간 간격, 기기 번호 끝자리 분)
         DailyPing.schedule(this)
         // 15분마다 정기 점검 (중단된 전송 복구 + 미전송 MMS 전송)
         Forwarder.scheduleWatchdog(this)
