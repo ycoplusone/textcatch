@@ -53,9 +53,13 @@ object Api {
         val url = Utils.getApiUrl(context)
         Log.d(TAG, "API 전송 → $url : ${payload.optString("type")} path=${payload.optString("path")}" +
                 " attempt=${payload.optInt("attempt")} device_id=${payload.optString("device_id")}")
+        // "_" 로 시작하는 키는 대기열 내부 관리용(RetryQueue) → 서버로 보내지 않는다
+        val internal = payload.keys().asSequence().filter { it.startsWith("_") }.toList()
+        val body = if (internal.isEmpty()) payload
+        else JSONObject(payload.toString()).also { copy -> internal.forEach { copy.remove(it) } }
         val request = Request.Builder()
             .url(url)
-            .post(payload.toString().toRequestBody(JSON))
+            .post(body.toString().toRequestBody(JSON))
             .build()
         return try {
             (if (fast) fastClient else client).newCall(request).execute().use { resp ->

@@ -60,6 +60,13 @@ open class SMSReceiver : BroadcastReceiver() {
             } catch (e: Exception) {
                 Log.e(TAG, "직접 전송 처리 실패 → WorkManager 로 큐잉", e)
                 Forwarder.enqueueSms(appContext, sender, receiver, text, timestamp, receivedAt)
+            }
+            try {
+                // 앱이 깨어난 김에 이전에 전송 도중 중단된 메시지 복구 + 대기열 재발송 예약 확인
+                RetryQueue.ensureScheduled(appContext)
+                Forwarder.sweepMms(appContext)
+            } catch (e: Exception) {
+                Log.e(TAG, "대기열/MMS 점검 실패", e)
             } finally {
                 pending.finish()
             }

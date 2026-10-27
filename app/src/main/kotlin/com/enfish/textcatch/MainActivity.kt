@@ -93,12 +93,26 @@ class MainActivity : AppCompatActivity() {
             }.start()
         }
 
+        // 4xx 6시간 / 일시 실패 24시간 넘게 못 보내 보류된 건 (서버 수정 후 다시 보낼 때)
+        binding.btnReleaseHold.setOnClickListener {
+            val ctx = applicationContext
+            Thread {
+                val n = RetryQueue.releaseHold(ctx)
+                runOnUiThread {
+                    toast(if (n > 0) "보류 메시지 ${n}건 재발송 시작" else "보류 메시지가 없습니다")
+                    renderQueue()
+                }
+            }.start()
+        }
+
         binding.btnLogs.setOnClickListener {
             startActivity(Intent(this, LogActivity::class.java))
         }
 
         // 6시간마다 정기 상태 확인(heartbeat) API 호출 예약 (01/07/13/19시대, 기기 번호 끝자리 분)
         DailyPing.schedule(this)
+        // 15분마다 정기 점검 (중단된 전송 복구 + 미전송 MMS 전송)
+        Forwarder.scheduleWatchdog(this)
 
         requestAllPermissions()
         refreshStatus()
@@ -108,11 +122,11 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         refreshStatus()
         RetryQueue.ensureScheduled(applicationContext)
-        // MMS 체인이 긴 백오프(구버전 작업 최대 5시간)에 걸려 멈춰 있으면 자동 정리
+        // MMS 체인이 멈춰 있으면 정리 + 저장소에 미전송 MMS 가 있으면 전송
         val ctx = applicationContext
         Thread {
             try {
-                Forwarder.kickMms(ctx, onlyIfStalled = true)
+                Forwarder.sweepMms(ctx)
             } catch (e: Exception) {
                 // 다음 화면 진입 / 버튼으로 다시 시도
             }
@@ -207,6 +221,8 @@ class MainActivity : AppCompatActivity() {
                     else -> append(" · 네트워크 대기 중")
                 }
             }
+            val held = RetryQueue.holdSize(applicationContext)
+            if (held > 0) append("\n보류 메시지 ${held}건 (보류메세지재발송으로 다시 전송)")
             retrying.minOfOrNull { it.nextScheduleTimeMillis }?.let { next ->
                 val maxTry = retrying.maxOf { it.runAttemptCount }
                 append("\n다음 재시도: ${fmt.format(Date(next))} (최다 ${maxTry}회 실패)")
