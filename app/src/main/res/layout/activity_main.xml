@@ -83,6 +83,13 @@
             android:text="테스트 전송" />
 
         <Button
+            android:id="@+id/btnHeartbeat"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="heartbeat 즉시 전송" />
+
+        <Button
             android:id="@+id/btnLogs"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

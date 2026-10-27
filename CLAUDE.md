@@ -77,8 +77,10 @@ SMS/MMS를 수신하면 **즉시 캐치**하고 REST API URL로 실시간 전송
   한 건씩 이어서 전송)으로 대체 — MMS 수신 시/앱 화면 진입 시 자동, "지연메세지발송" 버튼은 무조건 실행
 - **LogStore (object)**: 송신 이력 저장 (SharedPreferences, "시간 + 제목 10글자", 최신순 최대 300건)
 - **LogActivity**: 송신 이력 화면 (새로고침 / 지우기)
-- **MainActivity**: 설정 UI & 테스트 (API URL 설정, 권한 요청, 테스트 전송, 로그 보기,
-  앱 버전 표기, 전송 대기열 실시간 표시 — 발송 대기/재시도 대기/전송 중/순서 대기)
+- **MainActivity**: 설정 UI & 테스트 (API URL 설정, 권한 요청, 테스트 전송, heartbeat 즉시 전송, 로그 보기,
+  앱 버전 표기, 전송 대기열 실시간 표시 — 발송 대기/재시도 대기/전송 중/순서 대기/지연/보류)
+- **DailyPing / DailyPingReceiver**: heartbeat 를 **3시간마다**(01/04/07/…/22시, 분 = 기기 번호 끝자리) AlarmManager 정확 알람으로 예약,
+  부팅 시 재예약
 - **Utils (object)**: API URL 저장/조회, 기기 전화번호(수신자) 추출
 
 > 참고: 이전의 `SMSForwardService (IntentService)` 는 제거되었고 WorkManager 로 대체되었다.
@@ -337,7 +339,7 @@ scripts/
   - `versionCode` 를 **1 증가** (설치 시 업데이트로 인식되도록)
 - 같은 변경에 대해 빌드 오류를 고치며 다시 빌드하는 경우는 한 번만 올린다
 - 문서(CLAUDE.md 등)/스크립트만 수정해 앱 빌드가 필요 없는 경우는 올리지 않는다
-- 현재: versionName 2.6 / versionCode 17
+- 현재: versionName 2.7 / versionCode 18
 
 ### BroadcastReceiver 수정
 - SMSReceiver.kt / MmsReceiver.kt 를 수정하면 반드시 `installDebug`로 다시 설치한다
