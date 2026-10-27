@@ -49,16 +49,30 @@ SMS/MMS를 수신하면 **즉시 캐치**하고 REST API URL로 실시간 전송
 - **SMSReceiver (BroadcastReceiver)**: SMS 수신 즉시 감지 (SMS_RECEIVED)
 - **MmsReceiver (SMSReceiver 상속)**: MMS(WAP_PUSH_RECEIVED) 감지.
   같은 클래스를 매니페스트에 중복 선언할 수 없어 별도 클래스로 등록 (권한이 서로 다름)
-- **Forwarder (object)**: SMS 는 `forwardSms` 로 수신 즉시 직접 POST 1회(goAsync, 최대 ~8초) →
-  일시 실패분은 RetryQueue(지연 대기열)로. MMS/HEARTBEAT 는 바로 큐잉 (enqueueSms / enqueueMms / enqueueHeartbeat)
-- **RetryQueue (object)**: 일시 실패 payload 를 파일(filesDir/retry_queue)로 보관. 재발송 간격 1→2→4→…최대 600초
-  (대기열 공통 단계, 비면 초기화). `flushNow` = "지연메세지발송" 버튼(즉시 일괄 발송)
+- **Forwarder (object)**: SMS 는 `forwardSms` 로 **선저장(inflight 파일) 후** 직접 POST 1회(goAsync, 최대 ~8초) →
+  성공이면 inflight 삭제, 실패(일시/4xx)면 RetryQueue(지연 대기열)로. MMS/HEARTBEAT 는 바로 큐잉 (enqueueSms / enqueueMms / enqueueHeartbeat)
+- **RetryQueue (object)**: 파일 보관소 (filesDir 아래, 모두 임시파일→rename 원자적 쓰기). **메시지는 성공 전엔 삭제하지 않는다.**
+  - `inflight/` 직접 전송 중 / `retry_queue/` 재발송 대기 / `hold/` 보류 / `corrupt/` 손상 격리
+  - `recoverInflight`: 1분 넘게 남은 inflight(전송 중 프로세스 사망) → 대기열로 복구. `ensureScheduled` 가 호출
+    (앱 화면 진입 / SMS 수신 / heartbeat 알람 / 부팅)
+  - 재발송 간격 1→2→4→…최대 600초 (대기열 공통 단계, 비면 초기화). `flushNow` = "지연메세지발송" 버튼
+  - 보류: 4xx 가 6시간, 일시 실패가 24시간 넘게 계속되면 `hold/` 로 (30일 보관). `releaseHold` = "보류메세지재발송" 버튼
+  - `status()` = heartbeat 에 싣는 대기/보류/손상 현황. payload 의 `_` 로 시작하는 키는 내부용(Api.post 가 제거)
 - **RetryWorker (CoroutineWorker)**: 대기 중인 모든 건을 오래된 순으로 일괄 재발송. 16초 이하 간격은 워커 내부 대기,
-  그 이상은 지연 작업 예약. 네트워크 예외 시 라운드 중단. 수신 후 24시간 초과 시 포기
+  그 이상은 지연 작업 예약. 네트워크 예외 시 라운드 중단. 대기열 진입(`_since`) 후 4xx 6시간 / 일시 실패 24시간 초과 시 보류
+- **MmsStore (object)**: content://mms 조회 공용부 — 미전송 MMS id(`_id > last_mms_id`, m_type=132, 오래된 순),
+  다운로드 대기(m_type=130), MMS msg_id(`mms-{device_id}-{_id}-{date}` 고정값), heartbeat 용 MMS 현황
+- **WatchdogWorker (주기 작업 15분)**: `RetryQueue.ensureScheduled`(중단 전송 복구) + `Forwarder.sweepMms`(미전송 MMS 전송).
+  `Forwarder.scheduleWatchdog` 로 앱 실행/부팅 시 예약(KEEP)
 - **Api (object)**: OkHttp POST + 응답 판정(성공/영구 실패/일시 실패) + payload 공통 필드. 직접 전송과 워커가 공용
 - **ForwardWorker (CoroutineWorker)**: 데이터 추출 → REST API POST.
   MMS 는 content provider 폴링, 콘텐츠 미도착 시 `Result.retry()` (20초 선형 백오프, 최대 30회).
-  MMS 체인은 직렬이므로 콘텐츠 대기는 수신 후 10분(다운로드 중 m_type=130 이 있으면 60분)까지만 하고 종료.
+  MMS 체인은 직렬이므로 콘텐츠 대기는 수신 후 10분(다운로드 중 m_type=130 이 있으면 60분)까지만 하고 종료
+  (늦게 다운로드된 건은 정기 점검이 저장소에서 찾아 보냄).
+  **MMS 는 건너뛰지 않는다**: 항상 저장소의 가장 오래된 미전송 건부터 보내고(첫 설치 때만 최근 5분 제한),
+  보낸 뒤 남은 미전송 건이 있으면 정리 작업(sweep)을 이어 붙인다. 파트가 비어 있으면 잠시 기다린 뒤 빈 본문으로라도 전송.
+  `Forwarder.sweepMms` = 체인이 멈췄으면 kickMms, 비어 있고 미전송 MMS 가 있으면 정리 작업 시작
+  (WatchdogWorker 15분 / heartbeat 알람 / 부팅 / SMS 수신 / 앱 화면 진입 시).
   `Forwarder.kickMms` = 다음 실행이 15분 넘게 밀린 체인을 취소하고 정리 작업(sweep, 24시간 내 미전송 MMS 를
   한 건씩 이어서 전송)으로 대체 — MMS 수신 시/앱 화면 진입 시 자동, "지연메세지발송" 버튼은 무조건 실행
 - **LogStore (object)**: 송신 이력 저장 (SharedPreferences, "시간 + 제목 10글자", 최신순 최대 300건)
@@ -92,9 +106,10 @@ REST API 호출 (POST) — OkHttp
 일시 실패(네트워크 예외 / 408 / 429 / 5xx): RetryQueue 로 이동 → RetryWorker 가 대기 건 전부를
   1→2→4→…→600초(상한) 간격으로 일괄 재발송. 메인 화면 "지연메세지발송" 버튼으로 즉시 일괄 발송
   새 메시지 전송이 성공하면(서버 복구) 대기 중인 지연 메시지도 즉시 일괄 발송 (RetryQueue.onServerReachable)
-영구 실패(그 외 4xx) 또는 한도(수신 후 24시간 / MMS 콘텐츠 대기 30회) 초과:
-  전송 포기 → LogStore 에 "[실패 코드] 제목" 기록 → MMS 는 last_mms_id 넘김
-  → Result.success() 로 종료 (MMS 체인이 막히지 않도록 failure 를 쓰지 않음)
+4xx(408/429 제외): 역시 RetryQueue 로 → 6시간 재시도 후에도 4xx 면 hold/ 로 보류 (삭제 안 함)
+일시 실패 24시간 초과: hold/ 로 보류. 보류 건수는 heartbeat status 로 서버에 보고, "보류메세지재발송" 버튼으로 재전송
+  → LogStore 에 "[실패 코드 보류] 제목" 기록 → MMS 는 큐잉 시 last_mms_id 넘김
+MMS 콘텐츠 대기 한도(30회 / 10~60분) 초과: 종료 → Result.success() (MMS 체인이 막히지 않도록 failure 를 쓰지 않음)
 ```
 
 ## 설정 (build.gradle.kts에 추가)
@@ -117,6 +132,17 @@ dependencies {
   `sent_at`(이번 전송 시각), `attempt`(시도 횟수, 1부터), `path`(`direct` | `worker`)
 - 모든 전송(SMS/MMS/HEARTBEAT)에 `device_id`(ANDROID_ID, `Utils.getDeviceId`) 포함.
   한 기기의 여러 번호를 같은 기기로 묶는 용도. 공장 초기화·APK 서명 키 변경 시 값이 바뀐다.
+- 선저장 복구로 같은 메시지가 다시 올 수 있다(서버는 받았는데 폰이 기록 삭제 전 종료) → **msg_id 중복 제거 필수**
+- HEARTBEAT 에는 `status` 포함 — `hold_count > 0` / `corrupt_count > 0` / `hold_dropped > 0` 이면 서버에서 경보:
+  ```json
+  "status": { "retry_count": 0, "inflight_count": 0, "hold_count": 2, "hold_oldest_received_at": 1695123456789,
+              "hold_reasons": {"404": 2}, "hold_dropped": 0, "corrupt_count": 0,
+              "mms_unsent": 0, "mms_pending_download": 1, "mms_pending_oldest": 1695123000000 }
+  ```
+  `mms_unsent` 가 계속 0 이 아니면 MMS 전송이 막힌 것, `mms_pending_download` 는 최근 7일 내 폰에 다운로드되지 않은
+  MMS 알림 수 (자동 다운로드 꺼짐/실패 → 내용이 없어 보낼 수 없음 → 기기 점검 대상)
+- MMS 는 `msg_id` 가 `mms-{device_id}-{_id}-{date}` 로 고정 (어느 작업이 보내도 같은 값), `timestamp` 는 MMS 저장소 date,
+  `images_failed`(읽지 못한 이미지 파트 수), `attachments`(본문/이미지 외 파트 mime 목록, 내용은 미포함) 포함
 
 ### SMS 예시
 ```json
@@ -311,7 +337,7 @@ scripts/
   - `versionCode` 를 **1 증가** (설치 시 업데이트로 인식되도록)
 - 같은 변경에 대해 빌드 오류를 고치며 다시 빌드하는 경우는 한 번만 올린다
 - 문서(CLAUDE.md 등)/스크립트만 수정해 앱 빌드가 필요 없는 경우는 올리지 않는다
-- 현재: versionName 2.4 / versionCode 15
+- 현재: versionName 2.6 / versionCode 17
 
 ### BroadcastReceiver 수정
 - SMSReceiver.kt / MmsReceiver.kt 를 수정하면 반드시 `installDebug`로 다시 설치한다

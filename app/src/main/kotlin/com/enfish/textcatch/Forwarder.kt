@@ -64,7 +64,8 @@ object Forwarder {
     }
 
     /**
-     * SMS 빠른 경로: 수신 즉시 직접 POST 를 1회 시도하고, 일시적 실패일 때만 WorkManager 로 넘긴다.
+     * SMS 빠른 경로: payload 를 디스크에 먼저 기록(inflight)한 뒤 직접 POST 를 1회 시도하고,
+     * 실패(일시 실패/4xx)면 지연 대기열(RetryQueue)로 넘긴다.
      * (WorkManager 스케줄링/expedited quota/Doze 대기를 거치지 않아 평소 지연이 가장 작다)
      * 네트워크를 쓰므로 메인 스레드가 아닌 곳(goAsync 백그라운드 스레드 등)에서 호출해야 한다.
      * 최대 소요 ≈ Api 의 fast callTimeout(8초).
@@ -78,43 +79,45 @@ object Forwarder {
         receivedAt: Long = System.currentTimeMillis()
     ) {
         val msgId = UUID.randomUUID().toString()
-        var payload: org.json.JSONObject? = null
-        val outcome = try {
+        // 선저장: 보내기 전에 디스크에 먼저 기록 → 전송 도중 프로세스가 죽어도 recoverInflight 가 복구
+        val payload: org.json.JSONObject
+        val inflight: java.io.File
+        try {
             payload = Api.buildPayload(
                 context, "SMS", sender, receiver, body, timestamp,
                 msgId, receivedAt, attempt = 1, path = "direct"
             )
-            Api.post(context, payload, fast = true).also {
-                when (it) {
-                    is Api.PostOutcome.Success -> {
-                        LogStore.add(
-                            context, body, delayMs = payload.getLong("sent_at") - receivedAt,
-                            attempt = 1, via = LogStore.VIA_DIRECT
-                        )
-                        RetryQueue.onServerReachable(context)
-                    }
-                    is Api.PostOutcome.Permanent -> LogStore.add(
-                        context, body, failReason = it.reason,
-                        delayMs = payload.getLong("sent_at") - receivedAt,
-                        attempt = 1, via = LogStore.VIA_DIRECT
-                    )
-                    is Api.PostOutcome.Retryable -> Unit
+            inflight = RetryQueue.beginInflight(context, payload)
+        } catch (e: Exception) {
+            // 파일 기록 불가(저장공간 부족 등) → WorkManager DB 에라도 남긴다
+            Log.e(TAG, "선저장 실패 → WorkManager 로 넘김 msg_id=$msgId", e)
+            enqueueSms(context, sender, receiver, body, timestamp, receivedAt, msgId)
+            return
+        }
+
+        // Api.post 는 예외를 Retryable 로 바꿔 돌려주므로 여기서 던지지 않는다
+        val outcome = Api.post(context, payload, fast = true)
+        try {
+            if (outcome is Api.PostOutcome.Success) {
+                RetryQueue.remove(inflight)
+                LogStore.add(
+                    context, body, delayMs = payload.getLong("sent_at") - receivedAt,
+                    attempt = 1, via = LogStore.VIA_DIRECT
+                )
+                RetryQueue.onServerReachable(context)
+            } else {
+                // 일시 실패 / 4xx → 지연 대기열 (RetryWorker 가 일괄 재발송, 4xx 는 6시간 재시도 후 보류)
+                val reason = when (outcome) {
+                    is Api.PostOutcome.Permanent -> outcome.reason
+                    is Api.PostOutcome.Retryable -> outcome.reason
+                    else -> ""
                 }
+                Log.d(TAG, "직접 전송 실패($reason) → 지연 대기열로 넘김 msg_id=$msgId")
+                RetryQueue.promote(context, inflight, payload)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "직접 전송 중 예외 → 워커로 넘김", e)
-            Api.PostOutcome.Retryable("예외")
-        }
-        if (outcome is Api.PostOutcome.Retryable) {
-            val p = payload
-            if (p != null) {
-                // 일시 실패 → 지연 대기열 (RetryWorker 가 다른 대기 건과 함께 일괄 재발송)
-                Log.d(TAG, "직접 전송 실패(${outcome.reason}) → 지연 대기열로 넘김 msg_id=$msgId")
-                RetryQueue.add(context, p)
-            } else {
-                Log.d(TAG, "직접 전송 실패(${outcome.reason}) → WorkManager 로 넘김 msg_id=$msgId")
-                enqueueSms(context, sender, receiver, body, timestamp, receivedAt, msgId)
-            }
+            // inflight 파일은 남아 있으므로 recoverInflight 가 대기열로 옮긴다
+            Log.e(TAG, "직접 전송 후처리 실패 (선저장 파일로 복구 예정) msg_id=$msgId", e)
         }
     }
 
@@ -213,5 +216,31 @@ object Forwarder {
         wm.cancelUniqueWork(MMS_CHAIN).result.get()
         enqueueMmsSweep(context, Utils.getDevicePhoneNumber(context))
         return stuck
+    }
+
+    /**
+     * MMS 정기 점검: 저장소에 아직 안 보낸 MMS 가 있으면 정리 작업으로 보낸다.
+     * (콘텐츠 대기 한도를 넘겨 늦게 다운로드된 MMS / WAP Push 를 놓친 MMS 복구)
+     * - 체인이 멈춰 있으면 kickMms 로 정리, 진행 중이면 그 작업이 이어서 보내므로 건드리지 않는다.
+     * WorkManager DB 조회를 기다리므로 메인 스레드가 아닌 곳에서 호출. 반환값 = 정리 작업을 시작했으면 1 이상.
+     */
+    fun sweepMms(context: Context): Int {
+        val kicked = kickMms(context, onlyIfStalled = true)
+        if (kicked > 0) return kicked
+        if (MmsStore.unsentIds(context).isEmpty()) return 0
+        val infos = WorkManager.getInstance(context.applicationContext)
+            .getWorkInfosForUniqueWork(MMS_CHAIN).get()
+        if (infos.any { !it.state.isFinished }) return 0
+        Log.d(TAG, "MMS 정기 점검: 미전송 MMS 발견 → 정리 작업 시작")
+        enqueueMmsSweep(context, Utils.getDevicePhoneNumber(context))
+        return 1
+    }
+
+    /** 15분마다 정기 점검(WatchdogWorker) 예약. 이미 있으면 유지 (앱 실행 / 부팅 시 호출해도 안전). */
+    fun scheduleWatchdog(context: Context) {
+        val request = androidx.work.PeriodicWorkRequestBuilder<WatchdogWorker>(15, TimeUnit.MINUTES).build()
+        WorkManager.getInstance(context.applicationContext).enqueueUniquePeriodicWork(
+            WatchdogWorker.WORK_NAME, androidx.work.ExistingPeriodicWorkPolicy.KEEP, request
+        )
     }
 }

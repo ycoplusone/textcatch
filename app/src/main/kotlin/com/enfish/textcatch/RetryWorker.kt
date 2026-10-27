@@ -15,7 +15,7 @@ import kotlinx.coroutines.withContext
  * - 라운드 후에도 남은 건이 있으면 간격을 2배로 (1, 2, 4, … 최대 600초) 다음 라운드 진행.
  *   짧은 간격(INLINE_MAX_SEC 이하)은 워커 안에서 바로 기다려 정확히 지키고,
  *   긴 간격은 WorkManager 에 지연 작업으로 예약한다 (JobScheduler 최소 지연 오차 회피).
- * - 성공 / 영구 실패(4xx) / 수신 후 24시간 초과는 대기열에서 제거하고 송신 이력에 기록.
+ * - 성공은 대기열에서 제거. 4xx 가 6시간 / 일시 실패가 24시간 넘게 계속되면 삭제하지 않고 보류(hold)로 옮긴다.
  * - 네트워크 예외면 서버/망 장애로 보고 이번 라운드의 나머지는 건너뛴다 (다음 라운드에 함께 발송).
  */
 class RetryWorker(
@@ -69,9 +69,11 @@ class RetryWorker(
         Log.d(TAG, "일괄 재발송 시작 ${files.size}건")
         for (file in files) {
             if (isStopped) return
-            val payload = RetryQueue.read(file) ?: continue
+            val payload = RetryQueue.read(ctx, file) ?: continue
             val msgId = payload.optString("msg_id")
             val receivedAt = payload.optLong("received_at", System.currentTimeMillis())
+            // 보류 판단 기준: 대기열에 (다시) 들어온 시각 (이 기능 이전 파일은 수신 시각)
+            val waited = System.currentTimeMillis() - payload.optLong(RetryQueue.KEY_SINCE, receivedAt)
             val attempt = payload.optInt("attempt", 1) + 1
             Api.stamp(payload, ctx, msgId, receivedAt, attempt, "worker")
             val delayMs = payload.getLong("sent_at") - receivedAt
@@ -83,17 +85,21 @@ class RetryWorker(
                         attempt = attempt, via = LogStore.VIA_WORKER)
                 }
                 is Api.PostOutcome.Permanent -> {
-                    RetryQueue.remove(file)
-                    Log.w(TAG, "전송 포기 (${outcome.reason}) msg_id=$msgId")
-                    LogStore.add(ctx, payload.optString("body"), failReason = outcome.reason,
-                        delayMs = delayMs, attempt = attempt, via = LogStore.VIA_WORKER)
+                    // 4xx 도 서버 쪽 일시 문제일 수 있어 바로 버리지 않고 일정 시간 재시도 후 보류
+                    if (waited > RetryQueue.HOLD_PERMANENT_AFTER_MS) {
+                        RetryQueue.hold(ctx, file, payload, outcome.reason)
+                        LogStore.add(ctx, payload.optString("body"), failReason = "${outcome.reason} 보류",
+                            delayMs = delayMs, attempt = attempt, via = LogStore.VIA_WORKER)
+                    } else {
+                        RetryQueue.update(file, payload) // attempt 반영
+                        Log.w(TAG, "4xx 재시도 예정 (${outcome.reason}) attempt=$attempt msg_id=$msgId")
+                    }
                 }
                 is Api.PostOutcome.Retryable -> {
-                    if (System.currentTimeMillis() - receivedAt > RetryQueue.GIVE_UP_AFTER_MS) {
-                        RetryQueue.remove(file)
-                        Log.w(TAG, "전송 포기 (${outcome.reason} 24시간 초과) msg_id=$msgId")
+                    if (waited > RetryQueue.GIVE_UP_AFTER_MS) {
+                        RetryQueue.hold(ctx, file, payload, outcome.reason)
                         LogStore.add(ctx, payload.optString("body"),
-                            failReason = "${outcome.reason} 한도초과",
+                            failReason = "${outcome.reason} 보류",
                             delayMs = delayMs, attempt = attempt, via = LogStore.VIA_WORKER)
                     } else {
                         RetryQueue.update(file, payload) // attempt 반영

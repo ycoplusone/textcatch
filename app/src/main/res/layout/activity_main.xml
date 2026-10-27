@@ -39,8 +39,14 @@
             android:id="@+id/btnFlush"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="16dp"
             android:text="지연메세지발송" />
+
+        <Button
+            android:id="@+id/btnReleaseHold"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:text="보류메세지재발송" />
 
         <TextView
             android:layout_width="wrap_content"

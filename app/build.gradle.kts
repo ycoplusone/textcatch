@@ -12,8 +12,8 @@ android {
         applicationId = "com.enfish.textcatch"
         minSdk = 24
         targetSdk = 36
-        versionCode = 15
-        versionName = "2.4"
+        versionCode = 17
+        versionName = "2.6"
     }
 
     buildTypes {
