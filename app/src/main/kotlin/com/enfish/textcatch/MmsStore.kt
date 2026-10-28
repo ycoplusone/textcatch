@@ -22,9 +22,42 @@ object MmsStore {
 
     private val MMS_URI: Uri = Uri.parse("content://mms")
 
-    /** 마지막으로 전송(또는 대기열 이관)한 MMS id. -1 = 첫 설치(전송 기록 없음). */
-    fun getLastMmsId(context: Context): Long =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_LAST_MMS_ID, -1L)
+    /** 첫 설치 시 기준점: 이보다 오래된 기존 MMS 는 "이미 처리됨"으로 보고, 최근 것만 전송 대상으로 남긴다. */
+    private const val INIT_RECENT_MS = 5 * 60 * 1000L
+
+    /**
+     * 마지막으로 전송(또는 대기열 이관)한 MMS id.
+     * 첫 설치라 기록이 없으면 저장소의 기존 MMS(INIT_RECENT_MS 이전 것) 중 최대 id 로 초기화한다.
+     * → 기존 MMS 가 mms_unsent 로 잡히거나 정기 점검이 헛도는 것을 막고, 설치 직후 받은 MMS 는 그대로 전송.
+     * 권한이 없어 조회할 수 없으면 -1 을 돌려주고 다음 호출 때 다시 시도.
+     */
+    fun getLastMmsId(context: Context): Long = synchronized(this) {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val saved = p.getLong(KEY_LAST_MMS_ID, -1L)
+        if (saved >= 0) return saved
+        val init = initialLastId(context) ?: return -1L
+        p.edit().putLong(KEY_LAST_MMS_ID, init).commit()
+        Log.d(TAG, "첫 설치: last_mms_id 기준점 = $init (기존 MMS 제외)")
+        init
+    }
+
+    /** 저장소에서 INIT_RECENT_MS 이전에 받은 MMS 중 최대 id. MMS 가 없으면 0, 조회 실패면 null. */
+    private fun initialLastId(context: Context): Long? = try {
+        val cutoff = System.currentTimeMillis() - INIT_RECENT_MS
+        context.contentResolver.query(MMS_URI, arrayOf("_id", "date"), null, null, "_id DESC")?.use { c ->
+            var found = 0L
+            while (c.moveToNext()) {
+                if (normalizeDate(c.getLong(1)) < cutoff) {
+                    found = c.getLong(0)
+                    break
+                }
+            }
+            found
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "기준점 조회 실패 (READ_SMS 권한 확인)", e)
+        null
+    }
 
     /** 다운로드 완료된(m_type=132) 수신함(msg_box=1) MMS 중 lastSent 이후 id, 오래된 순. */
     fun unsentIds(context: Context, lastSent: Long = getLastMmsId(context)): List<Long> {

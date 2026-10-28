@@ -61,7 +61,8 @@ SMS/MMS를 수신하면 **즉시 캐치**하고 REST API URL로 실시간 전송
 - **RetryWorker (CoroutineWorker)**: 대기 중인 모든 건을 오래된 순으로 일괄 재발송. 16초 이하 간격은 워커 내부 대기,
   그 이상은 지연 작업 예약. 네트워크 예외 시 라운드 중단. 대기열 진입(`_since`) 후 4xx 6시간 / 일시 실패 24시간 초과 시 보류
 - **MmsStore (object)**: content://mms 조회 공용부 — 미전송 MMS id(`_id > last_mms_id`, m_type=132, 오래된 순),
-  다운로드 대기(m_type=130), MMS msg_id(`mms-{device_id}-{_id}-{date}` 고정값), heartbeat 용 MMS 현황
+  다운로드 대기(m_type=130), MMS msg_id(`mms-{device_id}-{_id}-{date}` 고정값), heartbeat 용 MMS 현황.
+  첫 설치로 `last_mms_id` 가 없으면 첫 조회 때 "5분 이전에 받은 기존 MMS 중 최대 id" 로 초기화 (기존 MMS 는 전송·집계 제외)
 - **WatchdogWorker (주기 작업 15분)**: `RetryQueue.ensureScheduled`(중단 전송 복구) + `Forwarder.sweepMms`(미전송 MMS 전송).
   `Forwarder.scheduleWatchdog` 로 앱 실행/부팅 시 예약(KEEP)
 - **Api (object)**: OkHttp POST + 응답 판정(성공/영구 실패/일시 실패) + payload 공통 필드. 직접 전송과 워커가 공용
@@ -339,7 +340,7 @@ scripts/
   - `versionCode` 를 **1 증가** (설치 시 업데이트로 인식되도록)
 - 같은 변경에 대해 빌드 오류를 고치며 다시 빌드하는 경우는 한 번만 올린다
 - 문서(CLAUDE.md 등)/스크립트만 수정해 앱 빌드가 필요 없는 경우는 올리지 않는다
-- 현재: versionName 2.7 / versionCode 18
+- 현재: versionName 2.8 / versionCode 19
 
 ### BroadcastReceiver 수정
 - SMSReceiver.kt / MmsReceiver.kt 를 수정하면 반드시 `installDebug`로 다시 설치한다
