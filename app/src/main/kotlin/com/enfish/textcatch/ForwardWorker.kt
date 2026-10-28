@@ -43,7 +43,10 @@ class ForwardWorker(
         // MMS 폴링: 1.5초 간격 x 6회 (약 9초) 동안 콘텐츠 도착 대기
         private const val MMS_POLL_TRIES = 6
         private const val MMS_POLL_INTERVAL_MS = 1500L
-        /** 첫 설치(전송 기록 없음) 때만 적용: 과거 MMS 를 쏟아내지 않도록 이 기간 내 것만 보낸다. */
+        /**
+         * 기준점(last_mms_id)을 정하지 못했을 때(권한 없음 등)만 적용: 과거 MMS 를 쏟아내지 않도록 이 기간 내 것만 보낸다.
+         * (보통은 MmsStore.getLastMmsId 가 첫 호출 때 기존 MMS 를 제외하도록 기준점을 잡는다)
+         */
         private const val MMS_RECENT_WINDOW_MS = 5 * 60 * 1000L
         /** 보내는 MMS 가 이 작업의 WAP Push 보다 이만큼 오래됐으면 밀린 건 → 지연 측정을 MMS 수신 시각 기준으로. */
         private const val MMS_BACKLOG_MS = 5 * 60 * 1000L
