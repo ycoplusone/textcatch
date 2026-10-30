@@ -57,15 +57,20 @@ open class SMSReceiver : BroadcastReceiver() {
         Thread {
             try {
                 Forwarder.forwardSms(appContext, sender, receiver, text, timestamp, receivedAt)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "직접 전송 처리 실패 → WorkManager 로 큐잉", e)
-                Forwarder.enqueueSms(appContext, sender, receiver, text, timestamp, receivedAt)
+                // 여기서 다시 예외가 나도 스레드가 죽어 앱 전체가 중지되지 않도록 잡는다
+                try {
+                    Forwarder.enqueueSms(appContext, sender, receiver, text, timestamp, receivedAt)
+                } catch (e2: Throwable) {
+                    Log.e(TAG, "WorkManager 큐잉도 실패 (선저장 파일이 남았으면 정기 점검이 복구)", e2)
+                }
             }
             try {
                 // 앱이 깨어난 김에 이전에 전송 도중 중단된 메시지 복구 + 대기열 재발송 예약 확인
                 RetryQueue.ensureScheduled(appContext)
                 Forwarder.sweepMms(appContext)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "대기열/MMS 점검 실패", e)
             } finally {
                 pending.finish()
@@ -91,10 +96,15 @@ open class SMSReceiver : BroadcastReceiver() {
         Thread {
             try {
                 Forwarder.kickMms(appContext, onlyIfStalled = true)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "MMS 체인 점검 실패 (큐잉은 계속)", e)
-            } finally {
+            }
+            try {
                 Forwarder.enqueueMms(appContext, receiver, receivedAt)
+            } catch (e: Throwable) {
+                // 큐잉 실패해도 MMS 는 저장소에 남아 있어 정기 점검(sweepMms)이 찾아 보낸다
+                Log.e(TAG, "MMS 큐잉 실패 → 정기 점검에서 전송", e)
+            } finally {
                 pending.finish()
             }
         }.start()
