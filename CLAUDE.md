@@ -42,7 +42,7 @@ SMS/MMS를 수신하면 **즉시 캐치**하고 REST API URL로 실시간 전송
 > ⚠️ **평문 HTTP 주의:** targetSdk 28+ 는 http(평문) 을 기본 차단한다.
 > API 서버가 http 이면 `res/xml/network_security_config.xml` 에 해당 도메인을
 > cleartext 허용으로 등록하고 매니페스트 `application` 에 연결해야 한다.
-> (현재 `enfish.duckdns.org` 등록됨)
+> (현재 기본 API 서버 도메인 등록됨)
 
 ## 핵심 컴포넌트
 
@@ -371,7 +371,7 @@ scripts/
 
 ### API URL 설정
 - MainActivity 에서 입력 → `Utils.setApiUrl()` 로 SharedPreferences 에 저장
-- 기본값은 `Utils.DEFAULT_API_URL` 에 하드코딩 (현재 `http://enfish.duckdns.org:5000/api/textcatch`)
+- 기본값은 `Utils.DEFAULT_API_URL` 에 하드코딩
 - 새로 http 도메인으로 바꾸면 network_security_config.xml 에도 도메인 추가 필요
 
 ### 송신 이력 로그
