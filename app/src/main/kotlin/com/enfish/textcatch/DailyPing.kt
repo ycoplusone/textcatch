@@ -9,24 +9,24 @@ import java.util.Calendar
 import java.util.Date
 
 /**
- * 3시간마다(01/04/07/10/13/16/19/22시대) "앱이 정상 동작 중"임을 알리는 정기 API 호출(heartbeat)을 예약한다.
+ * 1시간마다(매시) "앱이 정상 동작 중"임을 알리는 정기 API 호출(heartbeat)을 예약한다.
  * - 실제 SMS 발송이 아니라, 기존 전송 경로(ForwardWorker)로 heartbeat payload 만 보낸다.
- * - 발송 분 = 기기 번호 끝자리 (예: ...7 → 01:07, 04:07, 07:07, …, 22:07).
+ * - 발송 분 = 기기 번호 끝자리 (예: ...7 → 00:07, 01:07, 02:07, …, 23:07).
  * - AlarmManager 로 1회씩 예약, 발송 후 다음 회차로 다시 예약(재부팅 시 DailyPingReceiver 가 재예약).
  */
 object DailyPing {
     const val TAG = "DailyPing"
     const val ACTION_FIRE = "com.enfish.textcatch.action.DAILY_PING"
     const val BODY = "TextCatch 테스트"
-    const val FIRST_HOUR = 1
-    const val INTERVAL_HOURS = 3
+    const val FIRST_HOUR = 0
+    const val INTERVAL_HOURS = 1
     private const val REQUEST_CODE = 7001
 
     /** 기기 번호 끝자리(0~9) → 분. 숫자가 없으면 0. */
     fun minuteFromNumber(number: String): Int =
         number.lastOrNull { it.isDigit() }?.minus('0') ?: 0
 
-    /** 01시부터 INTERVAL_HOURS 간격의 [분] 중 지금 이후 가장 가까운 시각의 epoch millis. */
+    /** 00시부터 INTERVAL_HOURS 간격의 [분] 중 지금 이후 가장 가까운 시각의 epoch millis. */
     fun nextTriggerMillis(number: String, now: Long = System.currentTimeMillis()): Long {
         val cal = Calendar.getInstance().apply {
             timeInMillis = now

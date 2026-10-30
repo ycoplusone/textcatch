@@ -42,7 +42,7 @@ SMS/MMS를 수신하면 **즉시 캐치**하고 REST API URL로 실시간 전송
 > ⚠️ **평문 HTTP 주의:** targetSdk 28+ 는 http(평문) 을 기본 차단한다.
 > API 서버가 http 이면 `res/xml/network_security_config.xml` 에 해당 도메인을
 > cleartext 허용으로 등록하고 매니페스트 `application` 에 연결해야 한다.
-> (현재 `enfish.duckdns.org` 등록됨)
+> (현재 기본 API 서버 도메인 등록됨)
 
 ## 핵심 컴포넌트
 
@@ -80,9 +80,14 @@ SMS/MMS를 수신하면 **즉시 캐치**하고 REST API URL로 실시간 전송
 - **LogActivity**: 송신 이력 화면 (새로고침 / 지우기)
 - **MainActivity**: 설정 UI & 테스트 (API URL 설정, 권한 요청, 테스트 전송, heartbeat 즉시 전송, 로그 보기,
   앱 버전 표기, 전송 대기열 실시간 표시 — 발송 대기/재시도 대기/전송 중/순서 대기/지연/보류)
-- **DailyPing / DailyPingReceiver**: heartbeat 를 **3시간마다**(01/04/07/…/22시, 분 = 기기 번호 끝자리) AlarmManager 정확 알람으로 예약,
+- **DailyPing / DailyPingReceiver**: heartbeat 를 **1시간마다**(매시, 분 = 기기 번호 끝자리) AlarmManager 정확 알람으로 예약,
   부팅 시 재예약
 - **Utils (object)**: API URL 저장/조회, 기기 전화번호(수신자) 추출
+- **App (Application)** + **CrashLog (object)**: 프로세스 시작 시 크래시 기록기 설치(처리 안 된 예외를 SharedPreferences 에 commit).
+  heartbeat status 에 크래시 횟수/마지막 스택, OS 종료 사유(Android 11+, ANR/LOW_MEMORY/USER_REQUESTED 등),
+  "사용하지 않는 앱 권한 삭제" 상태를 싣는다. MainActivity 에 상태 표시 + "권한 자동 삭제 끄기" 버튼
+- **스레드 규칙**: 직접 만든 `Thread {}` 는 반드시 `catch (Throwable)` 로 감싼다 (잡히지 않은 예외 = 앱 중지).
+  MainActivity 의 파일/DB 조회는 메인 스레드에서 하지 않는다 ("응답 없음" 방지)
 
 > 참고: 이전의 `SMSForwardService (IntentService)` 는 제거되었고 WorkManager 로 대체되었다.
 
@@ -140,8 +145,14 @@ dependencies {
   ```json
   "status": { "retry_count": 0, "inflight_count": 0, "hold_count": 2, "hold_oldest_received_at": 1695123456789,
               "hold_reasons": {"404": 2}, "hold_dropped": 0, "corrupt_count": 0,
-              "mms_unsent": 0, "mms_pending_download": 1, "mms_pending_oldest": 1695123000000 }
+              "mms_unsent": 0, "mms_pending_download": 1, "mms_pending_oldest": 1695123000000,
+              "crash_count": 0, "last_crash_at": 0, "last_crash": "",
+              "exit_reasons": [{"reason": "USER_REQUESTED", "at": 1695120000000, "description": "..."}],
+              "unused_restrictions": "disabled" }
   ```
+  `crash_count` 가 늘었거나 `exit_reasons` 에 CRASH/ANR/LOW_MEMORY 가 있으면 앱 비정상 종료,
+  `unused_restrictions` 가 `enabled` 면 앱을 오래 안 열 때 SMS 권한이 회수될 수 있음 → 기기 점검 대상
+  (crash_count 는 누적값, 앱 데이터 삭제/재설치 시 초기화)
   `mms_unsent` 가 계속 0 이 아니면 MMS 전송이 막힌 것, `mms_pending_download` 는 최근 7일 내 폰에 다운로드되지 않은
   MMS 알림 수 (자동 다운로드 꺼짐/실패 → 내용이 없어 보낼 수 없음 → 기기 점검 대상)
 - MMS 는 `msg_id` 가 `mms-{device_id}-{_id}-{date}` 로 고정 (어느 작업이 보내도 같은 값), `timestamp` 는 MMS 저장소 date,
@@ -340,7 +351,7 @@ scripts/
   - `versionCode` 를 **1 증가** (설치 시 업데이트로 인식되도록)
 - 같은 변경에 대해 빌드 오류를 고치며 다시 빌드하는 경우는 한 번만 올린다
 - 문서(CLAUDE.md 등)/스크립트만 수정해 앱 빌드가 필요 없는 경우는 올리지 않는다
-- 현재: versionName 2.8 / versionCode 19
+- 현재: versionName 2.9 / versionCode 20
 
 ### BroadcastReceiver 수정
 - SMSReceiver.kt / MmsReceiver.kt 를 수정하면 반드시 `installDebug`로 다시 설치한다
@@ -360,7 +371,7 @@ scripts/
 
 ### API URL 설정
 - MainActivity 에서 입력 → `Utils.setApiUrl()` 로 SharedPreferences 에 저장
-- 기본값은 `Utils.DEFAULT_API_URL` 에 하드코딩 (현재 `http://enfish.duckdns.org:5000/api/textcatch`)
+- 기본값은 `Utils.DEFAULT_API_URL` 에 하드코딩
 - 새로 http 도메인으로 바꾸면 network_security_config.xml 에도 도메인 추가 필요
 
 ### 송신 이력 로그

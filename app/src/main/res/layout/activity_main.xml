@@ -96,6 +96,13 @@
             android:layout_marginTop="8dp"
             android:text="로그 보기 (송신 이력)" />
 
+        <Button
+            android:id="@+id/btnUnusedRestrictions"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="권한 자동 삭제 끄기" />
+
         <TextView
             android:id="@+id/textStatus"
             android:layout_width="match_parent"

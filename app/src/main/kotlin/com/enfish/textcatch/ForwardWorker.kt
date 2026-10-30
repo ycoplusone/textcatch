@@ -152,7 +152,10 @@ class ForwardWorker(
                 // heartbeat: 대기/보류/손상 건수를 서버에 보고 → 못 보낸 메시지가 조용히 남지 않게
                 if (type == "HEARTBEAT") put(
                     "status",
-                    RetryQueue.status(applicationContext).also { MmsStore.putStatus(applicationContext, it) }
+                    RetryQueue.status(applicationContext).also {
+                        MmsStore.putStatus(applicationContext, it)
+                        CrashLog.putStatus(applicationContext, it)
+                    }
                 )
             }
         }
@@ -401,6 +404,10 @@ class ForwardWorker(
             }
         } catch (e: Exception) {
             Log.e(TAG, "이미지 파트 읽기 실패 id=$partId", e)
+            null
+        } catch (e: OutOfMemoryError) {
+            // 큰 이미지(Base64 로 몇 배 커짐)로 메모리 부족 → 앱이 죽지 않게 이 파트만 실패 처리(images_failed)
+            Log.e(TAG, "이미지 파트 메모리 부족 id=$partId", e)
             null
         }
     }
