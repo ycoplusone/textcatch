@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 다운로드한 업데이트 APK 를 설치 인텐트에 넘기기 위한 FileProvider 경로 -->
+    <external-files-path name="update" path="update/" />
+</paths>

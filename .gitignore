@@ -11,3 +11,4 @@
 *.apk
 *.keystore
 *.bak
+/keystore.properties

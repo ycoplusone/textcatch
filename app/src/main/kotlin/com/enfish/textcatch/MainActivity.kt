@@ -149,6 +149,9 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, LogActivity::class.java))
         }
 
+        // 서버의 최신 버전과 비교해 새 버전이면 다운로드 → 설치
+        binding.btnUpdate.setOnClickListener { Updater.check(this, manual = true) }
+
         // 앱을 오래 안 열면 OS 가 SMS 권한을 회수하는 기능(권한 자동 삭제/앱 일시정지)을 끄는 설정 화면으로
         binding.btnUnusedRestrictions.setOnClickListener {
             try {
@@ -175,6 +178,9 @@ class MainActivity : AppCompatActivity() {
 
         requestAllPermissions()
         refreshStatus()
+
+        // 앱 실행 시 새 버전이 있으면 조용히 안내 (최신/실패면 아무 말 없음)
+        Updater.check(this, manual = false)
     }
 
     override fun onResume() {
