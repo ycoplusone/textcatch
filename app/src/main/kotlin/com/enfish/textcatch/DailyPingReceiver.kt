@@ -43,10 +43,14 @@ class DailyPingReceiver : BroadcastReceiver() {
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED -> {
                 Log.d(DailyPing.TAG, "부팅 완료 → 정기 호출 재예약")
+                // 부팅은 포그라운드 서비스 시작이 허용되는 예외라 재부팅 후 상주 서비스를 확실히 되살린다
+                KeepAliveService.start(context)
                 DailyPing.schedule(context)
                 Forwarder.scheduleWatchdog(context)
             }
             DailyPing.ACTION_FIRE -> {
+                // 1시간마다 상주 서비스가 살아있는지 확인/재시작 (죽었으면 다시 띄움)
+                KeepAliveService.start(context)
                 val receiver = Utils.getDevicePhoneNumber(context)
                 Forwarder.enqueueHeartbeat(
                     context,

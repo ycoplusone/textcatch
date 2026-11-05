@@ -21,8 +21,8 @@ android {
         applicationId = "com.enfish.textcatch"
         minSdk = 24
         targetSdk = 36
-        versionCode = 24
-        versionName = "3.3"
+        versionCode = 26
+        versionName = "3.5"
     }
 
     signingConfigs {

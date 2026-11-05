@@ -171,6 +171,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // 프로세스 상주 서비스 시작 (화면에서 시작하면 포그라운드 시작 제약 없음)
+        KeepAliveService.start(this)
+
         // 1시간마다 정기 상태 확인(heartbeat) API 호출 예약 (매시, 기기 번호 끝자리 분)
         DailyPing.schedule(this)
         // 15분마다 정기 점검 (중단된 전송 복구 + 미전송 MMS 전송)
