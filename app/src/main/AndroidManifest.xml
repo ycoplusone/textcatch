@@ -17,6 +17,9 @@
     <!-- 네트워크 -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- 플레이스토어 없이 서버에서 받은 APK 자체 업데이트 설치 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- Foreground Service (Android 12+) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -83,6 +86,23 @@
         </receiver>
 
         <!-- 데이터 추출 → REST API 전송은 WorkManager(ForwardWorker)가 처리 -->
+
+        <!-- 프로세스 상주용 포그라운드 서비스 (MIUI/삼성의 백그라운드 종료로 SMS 를 놓치지 않도록) -->
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- 업데이트 APK 를 설치 인텐트에 넘기기 위한 FileProvider -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
     </application>
 

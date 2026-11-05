@@ -176,6 +176,11 @@ class ForwardWorker(
         if (type == "MMS" && MmsStore.unsentIds(applicationContext).isNotEmpty()) {
             Forwarder.enqueueMmsSweep(applicationContext, receiver)
         }
+        // 1시간마다 heartbeat 때 서버 버전 확인 → 새 버전이면 알림 (앱을 안 열어도 알 수 있게).
+        // 백그라운드라 설치 화면은 못 열고, 알림을 탭해 앱이 열리면 거기서 다운로드+설치가 진행된다.
+        if (type == "HEARTBEAT") {
+            Updater.checkInBackground(applicationContext)
+        }
         result
     }
 

@@ -97,6 +97,13 @@
             android:text="로그 보기 (송신 이력)" />
 
         <Button
+            android:id="@+id/btnUpdate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="업데이트 확인" />
+
+        <Button
             android:id="@+id/btnUnusedRestrictions"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
